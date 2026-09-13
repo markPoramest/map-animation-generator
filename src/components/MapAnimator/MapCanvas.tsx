@@ -151,8 +151,23 @@ export function getMapStyle(routeConfig: RouteConfig): any {
   return THEME_STYLES[routeConfig.mapTheme] || THEME_STYLES.voyager;
 }
 
-// 0.0 to 0.82 is the active vehicle journey; 0.82 to 1.0 is arrival & zoom-out to show full route trail
-const TRAVEL_CUTOFF = 0.82;
+/**
+ * Calculates the exact normalized progress thresholds:
+ * 1. [0 .. pArrive]: Vehicle travels from start to destination
+ * 2. [pArrive .. pOverview]: Smooth cinematic camera zoom-out revealing the full route bounds
+ * 3. [pOverview .. 1.0]: Complete route trail showcase holding for ~3 seconds before video end
+ */
+export function getTimelinePhases(durationSec: number) {
+  const HOLD_SEC = 3.0; // Continue showing complete route trail for ~3 seconds before video end
+  const ZOOM_SEC = Math.min(1.5, Math.max(1.0, durationSec * 0.12));
+  const travelSec = Math.max(2.5, durationSec - HOLD_SEC - ZOOM_SEC);
+  const totalSec = travelSec + ZOOM_SEC + HOLD_SEC;
+
+  const pArrive = travelSec / totalSec;
+  const pOverview = (travelSec + ZOOM_SEC) / totalSec;
+
+  return { pArrive, pOverview, totalSec };
+}
 
 // Canvas Overlay Drawing Helpers for Video Export
 function drawPinOnCanvas(
@@ -483,8 +498,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
 
       // 3. Draw Vehicle Model & Floating Travel Time Badge
-      const isArriving = progress > TRAVEL_CUTOFF;
-      const travelFraction = isArriving ? 1.0 : progress / TRAVEL_CUTOFF;
+      const { pArrive, pOverview } = getTimelinePhases(routeConfig.durationSeconds || 8);
+      const isArrived = progress >= pArrive;
+      const travelFraction = isArrived ? 1.0 : progress / pArrive;
 
       if (calculatedRoute && calculatedRoute.samplePoints.length && progress > 0.001) {
         const samples = calculatedRoute.samplePoints;
@@ -538,8 +554,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY);
       }
 
-      // 5. Draw Arrival celebration card when arriving at destination and zoomed out
-      if (isArriving && calculatedRoute) {
+      // 5. Draw Arrival celebration card when arriving at destination and during complete route showcase
+      if (isArrived && calculatedRoute) {
         drawArrivalCardOnCanvas(ctx, routeConfig, calculatedRoute.totalDistanceKm, scaleX, scaleY);
       }
 
@@ -817,8 +833,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const totalSamples = samples.length;
       if (!totalSamples) return;
 
-      const isArriving = progress > TRAVEL_CUTOFF;
-      const travelFraction = isArriving ? 1.0 : progress / TRAVEL_CUTOFF;
+      const { pArrive, pOverview } = getTimelinePhases(routeConfig.durationSeconds || 8);
+      const isArrived = progress >= pArrive;
+      const travelFraction = isArrived ? 1.0 : progress / pArrive;
       const sampleIndex = Math.min(
         Math.floor(travelFraction * (totalSamples - 1)),
         totalSamples - 1
@@ -867,7 +884,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       // 2. Camera Positioning
       const isNorthLocked = routeConfig.lockNorth ?? true;
 
-      if (!isArriving) {
+      if (!isArrived) {
         // Normal Travel Camera Choreography
         switch (routeConfig.cameraMode) {
           case 'chase-3d': {
@@ -934,9 +951,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           }
         }
       } else {
-        // ARRIVAL ANIMATION: Smoothly zoom out to fit and showcase the entire route trail!
-        const t = (progress - TRAVEL_CUTOFF) / (1.0 - TRAVEL_CUTOFF);
-        // Smooth easing
+        // ARRIVAL & ZOOM-OUT ANIMATION:
+        // Interpolate to full overview, then hold the complete route trail for ~3 seconds before video ends
+        const t = Math.min(1.0, Math.max(0.0, (progress - pArrive) / (pOverview - pArrive)));
+        // Smooth easing for zoom out
         const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 
         const destLng = currentSample.lng;
@@ -1004,7 +1022,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
 
       // Trigger Confetti on arrival
-      if (progress >= TRAVEL_CUTOFF && !confettiFiredRef.current) {
+      if (progress >= pArrive && !confettiFiredRef.current) {
         confettiFiredRef.current = true;
         try {
           confetti({
@@ -1016,7 +1034,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         } catch {
           // ignore
         }
-      } else if (progress < TRAVEL_CUTOFF - 0.05) {
+      } else if (progress < pArrive - 0.05) {
         confettiFiredRef.current = false;
       }
     },
@@ -1152,7 +1170,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     },
   }));
 
-  const isArrived = currentProgress >= TRAVEL_CUTOFF;
+  const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 8);
+  const isArrived = currentProgress >= pArrive;
 
   return (
     <div className={`relative overflow-hidden bg-[#FFFCF2] border border-[#dcd4c6] ${getAspectRatioClasses(routeConfig.aspectRatio)}`}>
@@ -1231,7 +1250,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
                     <span className="font-mono text-[11px] tracking-tight">
                       {isArrived
                         ? calculatedRoute.totalDistanceKm.toFixed(1)
-                        : ((currentProgress / TRAVEL_CUTOFF) * calculatedRoute.totalDistanceKm).toFixed(1)} km
+                        : ((currentProgress / pArrive) * calculatedRoute.totalDistanceKm).toFixed(1)} km
                     </span>
                   </div>
                 </div>
