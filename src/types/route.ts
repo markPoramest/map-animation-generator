@@ -18,7 +18,7 @@ export type TrainModelType =
   | 'scenic-tram' 
   | 'cute-isometric';
 
-export type CameraMode = 'static-overview' | 'fixed-3d' | 'dynamic-overview' | 'top-down-2d' | 'chase-3d' | 'cinematic-orbit';
+export type CameraMode = 'static-overview' | 'dynamic-follow';
 
 export type AspectRatio = '16:9';
 
@@ -92,7 +92,7 @@ export const PRESET_ROUTES: PresetRoute[] = [
     vehicle: 'train',
     travelTimeText: '40 min',
     durationSeconds: 8,
-    cameraMode: 'fixed-3d',
+    cameraMode: 'dynamic-follow',
     mapTheme: 'voyager'
   },
   {

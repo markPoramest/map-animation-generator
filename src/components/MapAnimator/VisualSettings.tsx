@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Layers } from 'lucide-react';
+import { Layers, Maximize2, Navigation } from 'lucide-react';
 import { RouteConfig, MapTheme } from '@/types/route';
 
 interface VisualSettingsProps {
@@ -54,11 +54,56 @@ export const VisualSettings: React.FC<VisualSettingsProps> = ({
         </div>
       </div>
 
+      {/* Camera Mode Selection */}
+      <div className="flex flex-col gap-2.5">
+        <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5">
+          <Navigation className="w-3.5 h-3.5 text-[#EB5E28]" />
+          <span>Camera Mode</span>
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={() => onChange({ cameraMode: 'static-overview' })}
+            className={`flex flex-col p-3 rounded-xl border text-left transition-all ${
+              routeConfig.cameraMode === 'static-overview'
+                ? 'bg-[#EB5E28]/10 border-[#EB5E28]/60 text-[#252422] shadow-sm ring-1 ring-[#EB5E28]/20'
+                : 'bg-[#f5efe4] border-[#dcd4c6] hover:bg-[#ede5d6] text-[#736d65] hover:text-[#252422]'
+            }`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <Maximize2 className="w-4 h-4 text-[#EB5E28]" />
+              <span className="font-bold text-xs text-[#252422]">Static Overview</span>
+            </div>
+            <p className="text-[11px] text-[#736d65] leading-relaxed">
+              Locked bird&apos;s-eye framing of the full route corridor. Camera stays strictly stationary.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onChange({ cameraMode: 'dynamic-follow' })}
+            className={`flex flex-col p-3 rounded-xl border text-left transition-all ${
+              routeConfig.cameraMode === 'dynamic-follow'
+                ? 'bg-[#EB5E28]/10 border-[#EB5E28]/60 text-[#252422] shadow-sm ring-1 ring-[#EB5E28]/20'
+                : 'bg-[#f5efe4] border-[#dcd4c6] hover:bg-[#ede5d6] text-[#736d65] hover:text-[#252422]'
+            }`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <Navigation className="w-4 h-4 text-[#EB5E28]" />
+              <span className="font-bold text-xs text-[#252422]">Dynamic Follow</span>
+            </div>
+            <p className="text-[11px] text-[#736d65] leading-relaxed">
+              Cinematic tracking camera dynamically follows the vehicle along the path with smooth panning.
+            </p>
+          </button>
+        </div>
+      </div>
+
       {/* Camera Orientation Setting */}
       <div className="flex flex-col gap-2.5">
         <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5">
           <Layers className="w-3.5 h-3.5 text-[#EB5E28]" />
-          <span>Camera & Orientation</span>
+          <span>Orientation</span>
         </label>
         <div className="flex items-center justify-between p-3 bg-[#f5efe4] rounded-xl border border-[#dcd4c6]">
           <div className="flex flex-col">
