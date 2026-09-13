@@ -224,6 +224,62 @@ export function computeCruisingPitch(distanceKm: number, defaultPitch = 50): num
   return (1 - ratio) * defaultPitch + ratio * 22;
 }
 
+/**
+ * Computes look-ahead bearing along the route line with angular interpolation (exponential smoothing)
+ * and [-180, 180] angle wrapping to eliminate 360-degree rotation snaps.
+ */
+export function computeLookAheadBearing(
+  routeLine: ReturnType<typeof turf.lineString>,
+  currentDistKm: number,
+  totalDistanceKm: number,
+  frontCoord: [number, number],
+  prevSmoothedBearing: number | null,
+  alpha = 0.28
+): number {
+  // Look-ahead distance: 1.0% - 2.0% of total route distance (clamped between 150m and 6km)
+  const lookAheadDist = Math.max(0.15, Math.min(6.0, totalDistanceKm * 0.015));
+  const targetDist = Math.min(totalDistanceKm, currentDistKm + lookAheadDist);
+
+  let rawTargetPt: [number, number];
+  if (targetDist > currentDistKm + 0.001) {
+    const ptAlong = turf.along(routeLine, targetDist, { units: 'kilometers' });
+    rawTargetPt = ptAlong.geometry.coordinates as [number, number];
+  } else {
+    // If at destination end, sample backwards to keep the forward tangent
+    const behindDist = Math.max(0, currentDistKm - lookAheadDist);
+    const ptBehind = turf.along(routeLine, behindDist, { units: 'kilometers' });
+    const behindCoord = ptBehind.geometry.coordinates as [number, number];
+    return (turf.bearing(turf.point(behindCoord), turf.point(frontCoord)) + 360) % 360;
+  }
+
+  const rawBearing = (turf.bearing(turf.point(frontCoord), turf.point(rawTargetPt)) + 360) % 360;
+
+  if (prevSmoothedBearing === null) {
+    return rawBearing;
+  }
+
+  // Proper [-180, 180] angle wrapping prevents 360-degree rotation snaps across North (0°/360°)
+  const angleDiff = ((rawBearing - prevSmoothedBearing + 540) % 360) - 180;
+  const smoothed = (prevSmoothedBearing + angleDiff * alpha + 360) % 360;
+
+  return smoothed;
+}
+
+/**
+ * Returns stable altitude/zoom and pitch relative to route scale for Dynamic Follow mode
+ */
+export function getDynamicFollowZoomPitch(totalDistanceKm: number): { zoom: number; pitch: number } {
+  if (totalDistanceKm <= 40) {
+    return { zoom: 13.5, pitch: 45 };
+  } else if (totalDistanceKm <= 150) {
+    return { zoom: 11.8, pitch: 38 };
+  } else if (totalDistanceKm <= 600) {
+    return { zoom: 9.5, pitch: 32 };
+  } else {
+    return { zoom: 6.8, pitch: 25 };
+  }
+}
+
 // Canvas Overlay Drawing Helpers for Video Export
 function drawPinOnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -465,6 +521,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   const confettiFiredRef = useRef<boolean>(false);
   const progressRef = useRef<number>(currentProgress);
   const isPlayingRef = useRef<boolean>(isPlaying);
+  const smoothedBearingRef = useRef<number | null>(null);
+  const exportSmoothedBearingRef = useRef<number | null>(null);
 
   useEffect(() => {
     progressRef.current = currentProgress;
@@ -565,24 +623,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         const easedT = easeInOutQuad(travelFraction);
         const currentDistKm = Math.min(totalDistanceKm, Math.max(0, easedT * totalDistanceKm));
 
-        let frontCoord: [number, number];
-        let smoothedBearing = 0;
+        if (progress <= 0.001) {
+          exportSmoothedBearingRef.current = null;
+        }
 
-        if (currentDistKm <= 0.001) {
+        let frontCoord: [number, number];
+        if (currentDistKm <= 0.0001) {
           frontCoord = calculatedRoute.coordinates[0];
-          if (calculatedRoute.coordinates.length >= 2) {
-            smoothedBearing = (turf.bearing(turf.point(frontCoord), turf.point(calculatedRoute.coordinates[1])) + 360) % 360;
-          }
         } else {
           const safeSliceDist = Math.min(totalDistanceKm, Math.max(0.001, currentDistKm));
           const sliced = turf.lineSliceAlong(routeLine, 0, safeSliceDist, { units: 'kilometers' });
           const activeCoords = sliced.geometry.coordinates as [number, number][];
           frontCoord = activeCoords[activeCoords.length - 1];
-          if (activeCoords.length >= 2) {
-            const prevPt = activeCoords[activeCoords.length - 2];
-            smoothedBearing = (turf.bearing(turf.point(prevPt), turf.point(frontCoord)) + 360) % 360;
-          }
         }
+
+        const smoothedBearing = computeLookAheadBearing(
+          routeLine,
+          currentDistKm,
+          totalDistanceKm,
+          frontCoord,
+          exportSmoothedBearingRef.current
+        );
+        exportSmoothedBearingRef.current = smoothedBearing;
 
         const vp = map.project(frontCoord);
         const vx = vp.x * scaleX;
@@ -687,20 +749,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       updateProgressVisuals(progressRef.current);
 
       if (calculatedRoute && calculatedRoute.bounds) {
-        const isStaticOverview =
-          (calculatedRoute.totalDistanceKm || 0) > 40 ||
-          routeConfig.cameraMode === 'static-overview' ||
-          routeConfig.cameraMode === 'dynamic-overview';
+        const isStaticOverview = routeConfig.cameraMode === 'static-overview';
 
         if (isStaticOverview) {
-          // Lock camera view using fitBounds with 100px padding (80-120px) before animation begins
+          // Mode A: Static Overview — lock camera with padding 100 and pitch 20
           map.fitBounds(calculatedRoute.bounds, {
             padding: 100,
             duration: 0,
-            pitch: 0,
+            pitch: 20,
             bearing: 0,
           });
-          // Ensure all overview map tiles are fully loaded before starting frame progression
           const onInitIdle = () => {
             map.off('idle', onInitIdle);
             setupRouteLayers(map);
@@ -709,14 +767,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           map.on('idle', onInitIdle);
           setTimeout(onInitIdle, 1200);
         } else {
-          map.jumpTo({
-            center: [startLng, startLat],
-            zoom: routeConfig.cameraZoom || 13.0,
-            pitch: routeConfig.cameraPitch || 45,
-            bearing: 0,
-          });
-          setupRouteLayers(map);
-          updateProgressVisuals(progressRef.current);
+          // Mode B: Dynamic Follow — pre-cache overview tiles, then jump to start with scale-aware zoom
+          map.fitBounds(calculatedRoute.bounds, { padding: 80, duration: 0, pitch: 0, bearing: 0 });
+          const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
+          const onInitIdle = () => {
+            map.off('idle', onInitIdle);
+            map.jumpTo({
+              center: [startLng, startLat],
+              zoom,
+              pitch,
+              bearing: 0,
+            });
+            setupRouteLayers(map);
+            updateProgressVisuals(progressRef.current);
+          };
+          map.on('idle', onInitIdle);
+          setTimeout(onInitIdle, 1200);
         }
       }
     });
@@ -878,17 +944,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (map && isMapLoadedRef.current) {
-      const isStaticOverview =
-        (calculatedRoute?.totalDistanceKm || 0) > 40 ||
-        routeConfig.cameraMode === 'static-overview' ||
-        routeConfig.cameraMode === 'dynamic-overview';
+      smoothedBearingRef.current = null;
+      const isStaticOverview = routeConfig.cameraMode === 'static-overview';
 
       if (calculatedRoute && calculatedRoute.bounds) {
         if (isStaticOverview) {
+          // Mode A: Static Overview
           map.fitBounds(calculatedRoute.bounds, {
             padding: 100,
             duration: 0,
-            pitch: 0,
+            pitch: 20,
             bearing: 0,
           });
           const onRouteIdle = () => {
@@ -899,14 +964,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           map.on('idle', onRouteIdle);
           setTimeout(onRouteIdle, 1200);
         } else {
-          map.jumpTo({
-            center: [routeConfig.startPoint.lng, routeConfig.startPoint.lat],
-            zoom: routeConfig.cameraZoom || 13.0,
-            pitch: routeConfig.cameraPitch || 45,
-            bearing: 0,
-          });
-          setupRouteLayers(map);
-          updateProgressVisuals(currentProgress);
+          // Mode B: Dynamic Follow
+          const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
+          map.fitBounds(calculatedRoute.bounds, { padding: 80, duration: 0, pitch: 0, bearing: 0 });
+          const onRouteIdle = () => {
+            map.off('idle', onRouteIdle);
+            map.jumpTo({
+              center: [routeConfig.startPoint.lng, routeConfig.startPoint.lat],
+              zoom,
+              pitch,
+              bearing: 0,
+            });
+            setupRouteLayers(map);
+            updateProgressVisuals(currentProgress);
+          };
+          map.on('idle', onRouteIdle);
+          setTimeout(onRouteIdle, 1200);
         }
       } else {
         setupRouteLayers(map);
@@ -954,29 +1027,35 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const currentDistKm = Math.min(totalDistanceKm, Math.max(0, easedT * totalDistanceKm));
 
       // Requirement 2: In each animation frame, slice route geometry from distance 0 to current distance
+      if (progress <= 0.001) {
+        smoothedBearingRef.current = null;
+      }
+
+      // Requirement 2: In each animation frame, slice route geometry from distance 0 to current distance
       let activeCoords: [number, number][];
       let frontCoord: [number, number];
-      let frontBearing = 0;
 
       if (currentDistKm <= 0.0001 || progress <= 0.0001) {
         const startPt = calculatedRoute.coordinates[0];
         activeCoords = [startPt, startPt];
         frontCoord = startPt;
-        if (calculatedRoute.coordinates.length >= 2) {
-          const p2 = calculatedRoute.coordinates[1];
-          frontBearing = (turf.bearing(turf.point(startPt), turf.point(p2)) + 360) % 360;
-        }
       } else {
         const safeSliceDist = Math.min(totalDistanceKm, Math.max(0.001, currentDistKm));
         const sliced = turf.lineSliceAlong(routeLine, 0, safeSliceDist, { units: 'kilometers' });
         activeCoords = sliced.geometry.coordinates as [number, number][];
         frontCoord = activeCoords[activeCoords.length - 1];
-
-        if (activeCoords.length >= 2) {
-          const prevPt = activeCoords[activeCoords.length - 2];
-          frontBearing = (turf.bearing(turf.point(prevPt), turf.point(frontCoord)) + 360) % 360;
-        }
       }
+
+      // Task 1: Look-ahead distance approach (1.0% - 2.0% of total distance) with angular Lerp
+      // and [-180, 180] angle wrapping to eliminate 360-degree rotation snaps and rotation jitter
+      const frontBearing = computeLookAheadBearing(
+        routeLine,
+        currentDistKm,
+        totalDistanceKm,
+        frontCoord,
+        smoothedBearingRef.current
+      );
+      smoothedBearingRef.current = frontBearing;
 
       // Requirement 2: Update route source data with sliced geometry
       const activeSource = map.getSource('journey-active-source') as maplibregl.GeoJSONSource | undefined;
@@ -991,23 +1070,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         });
       }
 
-      const isStaticOverview =
-        (calculatedRoute.totalDistanceKm || 0) > 40 ||
-        routeConfig.cameraMode === 'static-overview' ||
-        routeConfig.cameraMode === 'dynamic-overview';
+      const isStaticOverview = routeConfig.cameraMode === 'static-overview';
 
-      // Requirement 1: Keep camera completely static (fixed zoom, pitch, bearing) throughout entire loop.
-      // Do not animate map.flyTo or map.panTo.
-      if (!isStaticOverview) {
+      if (isStaticOverview) {
+        // Mode A: Static Overview
+        // Keep the camera strictly stationary across all frames.
+        // Do not animate map.flyTo or map.panTo.
+      } else {
+        // Mode B: Dynamic Follow
+        // Camera dynamically pans and follows the vehicle's coordinates with stable scale-aware altitude/zoom
+        const { zoom, pitch } = getDynamicFollowZoomPitch(totalDistanceKm);
         const isNorthLocked = routeConfig.lockNorth ?? true;
-        if (!isArrived) {
-          map.jumpTo({
-            center: frontCoord,
-            zoom: routeConfig.cameraZoom || 13.0,
-            pitch: routeConfig.cameraPitch || 45,
-            bearing: isNorthLocked ? 0 : frontBearing,
-          });
-        }
+        const camBearing = isNorthLocked ? 0 : frontBearing * 0.35;
+
+        map.jumpTo({
+          center: frontCoord,
+          zoom,
+          pitch,
+          bearing: camBearing,
+        });
       }
 
       // Requirement 2: Update vehicle/train marker's coordinate to match current front point
@@ -1176,12 +1257,23 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     },
     resetCamera: () => {
       if (mapInstanceRef.current && calculatedRoute) {
-        mapInstanceRef.current.fitBounds(calculatedRoute.bounds, {
-          padding: 100,
-          duration: 1000,
-          pitch: 0,
-          bearing: 0,
-        });
+        smoothedBearingRef.current = null;
+        if (routeConfig.cameraMode === 'static-overview') {
+          mapInstanceRef.current.fitBounds(calculatedRoute.bounds, {
+            padding: 100,
+            duration: 800,
+            pitch: 20,
+            bearing: 0,
+          });
+        } else {
+          const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
+          mapInstanceRef.current.jumpTo({
+            center: [routeConfig.startPoint.lng, routeConfig.startPoint.lat],
+            zoom,
+            pitch,
+            bearing: 0,
+          });
+        }
       }
     },
   }));
