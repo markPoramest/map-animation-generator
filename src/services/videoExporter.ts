@@ -60,6 +60,19 @@ export async function exportRouteVideo({
   }
 
   const filename = `${cleanTitle}_${durationSeconds}s.${fileExt}`;
+
+  // 1. Pre-render Frame 0 and wait for all tiles and canvas overlays to be 100% ready
+  if (onProgress) {
+    onProgress({
+      progress: 0,
+      status: 'Preparing frame 0 & preloading map tiles...',
+    });
+  }
+  await renderFrameAtProgress(0);
+  // Guarantee buffer flush to canvas
+  await new Promise((r) => setTimeout(r, 150));
+
+  // 2. NOW initialize captureStream and mediaRecorder — canvas already has the pristine frame 0
   const stream = canvas.captureStream(fps);
   const recordedChunks: Blob[] = [];
 
@@ -91,12 +104,12 @@ export async function exportRouteVideo({
 
   mediaRecorder.start(100);
 
-  // Render frames sequentially
+  // 3. Render and record frames sequentially
   const frameIntervalMs = 1000 / fps;
 
   for (let frame = 0; frame <= totalFrames; frame++) {
     const progress = frame / totalFrames;
-    
+
     // Update progress state
     if (onProgress) {
       onProgress({
@@ -105,8 +118,10 @@ export async function exportRouteVideo({
       });
     }
 
-    // Direct render callback
-    await renderFrameAtProgress(progress);
+    if (frame > 0) {
+      // Direct render callback for frames 1..totalFrames
+      await renderFrameAtProgress(progress);
+    }
 
     // Give time for canvas to flush frame to stream
     await new Promise((r) => setTimeout(r, frameIntervalMs));

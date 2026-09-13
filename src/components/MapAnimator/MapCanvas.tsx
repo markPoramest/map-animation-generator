@@ -451,6 +451,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      // 0. Fill solid opaque background so video encoder never samples transparent black
+      const baseBg =
+        routeConfig.mapTheme === 'dark'
+          ? '#121212'
+          : routeConfig.mapTheme === 'satellite'
+          ? '#0b1320'
+          : '#FFFCF2';
+      ctx.fillStyle = baseBg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
       // 1. Draw Map WebGL Canvas Frame
       ctx.drawImage(mapCanvas, 0, 0);
 
@@ -1088,23 +1098,37 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     renderFrameAtProgress: async (progress: number) => {
       progressRef.current = progress;
       updateProgressVisuals(progress);
-      await new Promise<void>((resolve) => {
-        if (mapInstanceRef.current) {
-          let isDone = false;
-          const finishFrame = () => {
-            if (!isDone) {
-              isDone = true;
-              drawCompositeFrame(progress);
-              resolve();
-            }
-          };
-          mapInstanceRef.current.once('render', finishFrame);
-          mapInstanceRef.current.triggerRepaint();
-          // Fallback timeout guarantees export never stalls
-          setTimeout(finishFrame, 60);
-        } else {
-          resolve();
+
+      const map = mapInstanceRef.current;
+      if (!map) return;
+
+      // On initial start frame, wait until map tiles are completely loaded so no blank or black map appears
+      if (progress <= 0.001) {
+        if (!map.areTilesLoaded()) {
+          await new Promise<void>((res) => {
+            const onIdle = () => {
+              map.off('idle', onIdle);
+              res();
+            };
+            map.on('idle', onIdle);
+            setTimeout(onIdle, 600);
+          });
         }
+      }
+
+      await new Promise<void>((resolve) => {
+        let isDone = false;
+        const finishFrame = () => {
+          if (!isDone) {
+            isDone = true;
+            drawCompositeFrame(progress);
+            resolve();
+          }
+        };
+        map.once('render', finishFrame);
+        map.triggerRepaint();
+        // Fallback timeout guarantees export never stalls
+        setTimeout(finishFrame, 80);
       });
     },
     getCanvas: () => {
