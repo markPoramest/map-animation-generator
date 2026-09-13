@@ -1,5 +1,5 @@
 import * as turf from '@turf/turf';
-import { GeoPoint, VehicleType } from '@/types/route';
+import { GeoPoint, VehicleType, ModeCategory } from '@/types/route';
 import { getRailwayRoute } from './railwayNetwork';
 
 export interface RouteSamplePoint {
@@ -93,28 +93,68 @@ export async function fetchOSRMRoute(points: GeoPoint[], vehicle: VehicleType): 
 }
 
 /**
+ * Resolves the underlying transport mode for routing calculations.
+ * When vehicle is 'custom', maps its modeCategory to the corresponding transport mode:
+ * - 'train' / 'shinkansen' -> railway tracks
+ * - 'flight' -> airplane great-circle flight arc with altitude curve
+ * - 'ship' -> curved sea route
+ * - 'car' / 'bus' -> road driving directions
+ * - 'walk' / 'bicycle' -> walking/cycling paths
+ */
+export function resolveEffectiveTransportMode(
+  vehicle: VehicleType,
+  modeCategory?: ModeCategory
+): VehicleType {
+  if (vehicle !== 'custom') {
+    return vehicle;
+  }
+  switch (modeCategory) {
+    case 'flight':
+      return 'airplane';
+    case 'shinkansen':
+      return 'shinkansen';
+    case 'train':
+      return 'train';
+    case 'ship':
+      return 'ship';
+    case 'car':
+      return 'car';
+    case 'bus':
+      return 'bus';
+    case 'bicycle':
+      return 'bicycle';
+    case 'walk':
+      return 'walk';
+    default:
+      return 'train';
+  }
+}
+
+/**
  * Builds the full calculated route with high-density sample points and bearings
  */
 export async function calculateRoute(
   startPoint: GeoPoint,
   endPoint: GeoPoint,
   waypoints: GeoPoint[] = [],
-  vehicle: VehicleType = 'train'
+  vehicle: VehicleType = 'train',
+  modeCategory?: ModeCategory
 ): Promise<CalculatedRoute> {
   const allPoints = [startPoint, ...waypoints, endPoint];
+  const effectiveMode = resolveEffectiveTransportMode(vehicle, modeCategory);
   
   let rawCoords: [number, number][] | null = null;
 
-  if (vehicle === 'train' || vehicle === 'shinkansen') {
+  if (effectiveMode === 'train' || effectiveMode === 'shinkansen') {
     // Authentic railway track extraction (Option B static corridors -> Option A Overpass -> Fallback easement)
-    rawCoords = await getRailwayRoute(startPoint, endPoint, waypoints, vehicle);
-  } else if (vehicle === 'airplane' || vehicle === 'ship') {
-    rawCoords = generateCurvedPath(allPoints, vehicle);
+    rawCoords = await getRailwayRoute(startPoint, endPoint, waypoints, effectiveMode);
+  } else if (effectiveMode === 'airplane' || effectiveMode === 'ship') {
+    rawCoords = generateCurvedPath(allPoints, effectiveMode);
   } else {
     // Road networks for car, bus, bicycle, walk via OSRM
-    rawCoords = await fetchOSRMRoute(allPoints, vehicle);
+    rawCoords = await fetchOSRMRoute(allPoints, effectiveMode);
     if (!rawCoords || rawCoords.length < 2) {
-      rawCoords = generateCurvedPath(allPoints, vehicle);
+      rawCoords = generateCurvedPath(allPoints, effectiveMode);
     }
   }
 
@@ -155,7 +195,7 @@ export async function calculateRoute(
 
     // Airplane parabola altitude curve
     let altitudeOffset = 0;
-    if (vehicle === 'airplane') {
+    if (effectiveMode === 'airplane') {
       // Parabolic arc peak at mid-flight
       altitudeOffset = Math.sin(progress * Math.PI) * 45;
     }
@@ -182,7 +222,8 @@ export async function calculateRoute(
     ship: 35,
     custom: 60,
   };
-  const estimatedTimeMin = Math.round((totalDistanceKm / (speedKmh[vehicle] || 60)) * 60);
+  const effectiveSpeed = speedKmh[effectiveMode] || 60;
+  const estimatedTimeMin = Math.round((totalDistanceKm / effectiveSpeed) * 60);
 
   return {
     coordinates: rawCoords,

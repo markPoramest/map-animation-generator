@@ -59,9 +59,15 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
+        const defaultCategory: ModeCategory = routeConfig.vehicle === 'airplane'
+          ? 'flight'
+          : (routeConfig.vehicle === 'custom'
+              ? (routeConfig.modeCategory || 'train')
+              : (routeConfig.vehicle as ModeCategory));
         onChange({
           vehicle: 'custom',
           customVehicleImage: reader.result,
+          modeCategory: defaultCategory,
         });
       }
     };

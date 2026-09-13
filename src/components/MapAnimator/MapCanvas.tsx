@@ -7,7 +7,7 @@ import * as turf from '@turf/turf';
 import { RouteConfig, MapTheme, AspectRatio, ModeCategory, getEffectiveModeCategory } from '@/types/route';
 import { CalculatedRoute, RouteSamplePoint } from '@/services/routing';
 import { VehicleIcon, getVehicleSvgDataUri } from './VehicleIcons';
-import { CategoryGlyph, getCategoryGlyphDataUri } from './CategoryGlyphs';
+import { CategoryGlyph, getCategoryGlyphDataUri, CATEGORY_LABELS } from './CategoryGlyphs';
 
 export interface MapCanvasHandle {
   renderFrameAtProgress: (progress: number) => Promise<void>;
@@ -914,11 +914,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         const vx = vp.x * scaleX;
         const vy = vp.y * scaleY;
 
+        const isFlight = routeConfig.vehicle === 'airplane' || (routeConfig.vehicle === 'custom' && routeConfig.modeCategory === 'flight');
+        const altitudeOffset = isFlight ? Math.sin(travelFraction * Math.PI) * 45 * scaleY : 0;
+
         // Draw Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt)
         if (vehicleImageRef.current && vehicleImageRef.current.complete) {
           const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(smoothedBearing);
           ctx.save();
-          ctx.translate(vx, vy);
+          ctx.translate(vx, vy - altitudeOffset);
           ctx.scale(vehFlipX, 1);
           ctx.rotate((tiltDeg * Math.PI) / 180);
           const vehicleSize = 58 * scaleX;
@@ -1429,6 +1432,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
       // Requirement 2: Update vehicle/train marker's coordinate to match current front point
       const screenPos = map.project(frontCoord);
+      const isFlight = routeConfig.vehicle === 'airplane' || (routeConfig.vehicle === 'custom' && routeConfig.modeCategory === 'flight');
+      const altitudeOffset = isFlight ? Math.sin(travelFraction * Math.PI) * 45 : 0;
       setVehicleState({
         point: {
           lng: frontCoord[0],
@@ -1436,6 +1441,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           bearing: frontBearing,
           distanceKmFromStart: currentDistKm,
           progress: travelFraction,
+          altitudeOffset,
         },
         screenPos: { x: screenPos.x, y: screenPos.y },
         visible: true,
@@ -1817,7 +1823,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
             {/* Travel Mode Badge */}
             <div className="bg-[#EB5E28]/10 backdrop-blur-md border border-[#EB5E28]/30 px-3 py-1.5 rounded-lg text-[#EB5E28] text-xs font-semibold uppercase tracking-wider">
-              {routeConfig.vehicle === 'custom' ? 'Custom' : routeConfig.vehicle} • {routeConfig.travelTimeText}
+              {routeConfig.vehicle === 'custom'
+                ? CATEGORY_LABELS[getEffectiveModeCategory(routeConfig)]
+                : routeConfig.vehicle} • {routeConfig.travelTimeText}
             </div>
           </div>
         )}

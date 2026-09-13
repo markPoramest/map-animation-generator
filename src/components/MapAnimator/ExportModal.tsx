@@ -55,6 +55,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     routeConfig.endPoint.lat,
     routeConfig.endPoint.lng,
     routeConfig.vehicle,
+    routeConfig.modeCategory,
     routeConfig.durationSeconds,
   ]);
 
