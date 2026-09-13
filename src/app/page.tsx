@@ -76,7 +76,8 @@ export default function Home() {
           routeConfig.startPoint,
           routeConfig.endPoint,
           routeConfig.waypoints,
-          routeConfig.vehicle
+          routeConfig.vehicle,
+          routeConfig.modeCategory
         );
         if (!isCancelled) {
           setCalculatedRoute(route);
@@ -103,6 +104,8 @@ export default function Home() {
     routeConfig.endPoint.lat,
     routeConfig.endPoint.lng,
     routeConfig.vehicle,
+    routeConfig.modeCategory,
+    routeConfig.waypoints,
   ]);
 
   const handleUpdateConfig = (updated: Partial<RouteConfig>) => {
@@ -272,7 +275,7 @@ export default function Home() {
       </main>
 
       <ExportModal
-        key={`${routeConfig.startPoint.lat}_${routeConfig.startPoint.lng}_${routeConfig.endPoint.lat}_${routeConfig.endPoint.lng}_${routeConfig.vehicle}`}
+        key={`${routeConfig.startPoint.lat}_${routeConfig.startPoint.lng}_${routeConfig.endPoint.lat}_${routeConfig.endPoint.lng}_${routeConfig.vehicle}_${routeConfig.modeCategory || ''}`}
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
         routeConfig={routeConfig}
