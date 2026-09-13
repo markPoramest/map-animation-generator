@@ -169,6 +169,35 @@ export function getTimelinePhases(durationSec: number) {
   return { pArrive, pOverview, totalSec };
 }
 
+/**
+ * Standard cubic ease-in-out interpolation for silky smooth camera transitions
+ */
+export function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/**
+ * Calculates adaptive cruising zoom based on logarithmic route distance scaling.
+ * Prevents tile flickering and dizziness on routes > 50 km - 500+ km.
+ */
+export function computeCruisingZoom(distanceKm: number, defaultZoom = 13.0): number {
+  if (distanceKm <= 35) return defaultZoom;
+  // Logarithmic altitude scaling: each doubling of distance drops zoom smoothly
+  const scale = Math.log2(distanceKm / 35);
+  const cruising = defaultZoom - scale * 1.15;
+  return Math.max(4.5, Math.min(defaultZoom, cruising));
+}
+
+/**
+ * Calculates adaptive cruising pitch for long routes.
+ * Bird's-eye view (20° - 25°) dramatically reduces frustum horizon tile load.
+ */
+export function computeCruisingPitch(distanceKm: number, defaultPitch = 50): number {
+  if (distanceKm <= 35) return defaultPitch;
+  const ratio = Math.min(1.0, (distanceKm - 35) / 200);
+  return (1 - ratio) * defaultPitch + ratio * 22;
+}
+
 // Canvas Overlay Drawing Helpers for Video Export
 function drawPinOnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -617,7 +646,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       attributionControl: false,
       preserveDrawingBuffer: true, // Essential for Video export
       fadeDuration: 0, // Eliminate tile loading fade lag
-      maxTileCacheSize: 1000, // Preload and keep tiles in memory
+      maxTileCacheSize: 2500, // Preload and keep tiles in memory for long routes
       interactive: true,
     } as any);
 
@@ -627,13 +656,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       updateProgressVisuals(progressRef.current);
 
       if (calculatedRoute && calculatedRoute.bounds) {
-        // Pre-warm full route bounds tiles so zoom-out is butter smooth
+        // Multi-tier pre-warming: pre-load corridor bounds tiles first
         map.fitBounds(calculatedRoute.bounds, { padding: 40, duration: 0 });
         setTimeout(() => {
           map.jumpTo({
             center: [startLng, startLat],
-            zoom: routeConfig.cameraZoom || 13,
-            pitch: routeConfig.cameraPitch || 45,
+            zoom: routeConfig.cameraZoom || 13.8,
+            pitch: routeConfig.cameraPitch || 48,
             bearing: 0,
           });
           setupRouteLayers(map);
@@ -885,82 +914,131 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const isNorthLocked = routeConfig.lockNorth ?? true;
 
       if (!isArrived) {
-        // Normal Travel Camera Choreography
-        switch (routeConfig.cameraMode) {
-          case 'chase-3d': {
-            map.jumpTo({
-              center: [currentSample.lng, currentSample.lat],
-              zoom: routeConfig.cameraZoom || 13.2,
-              pitch: routeConfig.cameraPitch || 50,
-              bearing: isNorthLocked ? 0 : smoothedBearing + (routeConfig.cameraBearingOffset || 0),
-            });
-            break;
+        // Adaptive Dynamic Zoom & Camera Elevation for long-distance routes (> 40 km - 500+ km)
+        const isLongRoute = (calculatedRoute.totalDistanceKm || 0) > 40;
+
+        if (isLongRoute) {
+          const cruisingZoom = computeCruisingZoom(calculatedRoute.totalDistanceKm, routeConfig.cameraZoom || 13.0);
+          const cruisingPitch = computeCruisingPitch(calculatedRoute.totalDistanceKm, routeConfig.cameraPitch || 50);
+
+          const startZoom = Math.max(13.8, routeConfig.cameraZoom || 13.8);
+          const startPitch = Math.max(45, routeConfig.cameraPitch || 48);
+          const endZoom = Math.max(13.5, routeConfig.cameraZoom || 13.5);
+          const endPitch = Math.max(45, routeConfig.cameraPitch || 45);
+
+          let dynamicZoom = cruisingZoom;
+          let dynamicPitch = cruisingPitch;
+
+          if (travelFraction < 0.15) {
+            // Phase 1: Departure Liftoff (0% - 15%) — smooth climb to cruising altitude
+            const subT = travelFraction / 0.15;
+            const ease = easeInOutCubic(subT);
+            dynamicZoom = (1 - ease) * startZoom + ease * cruisingZoom;
+            dynamicPitch = (1 - ease) * startPitch + ease * cruisingPitch;
+          } else if (travelFraction > 0.85) {
+            // Phase 3: Arrival Descent (85% - 100%) — smooth glide down into destination
+            const subT = (travelFraction - 0.85) / 0.15;
+            const ease = easeInOutCubic(subT);
+            dynamicZoom = (1 - ease) * cruisingZoom + ease * endZoom;
+            dynamicPitch = (1 - ease) * cruisingPitch + ease * endPitch;
+          } else {
+            // Phase 2: Cruising Flight (15% - 85%) — stable bird's-eye perspective
+            dynamicZoom = cruisingZoom;
+            dynamicPitch = cruisingPitch;
           }
 
-          case 'dynamic-overview': {
-            const startZoom = 13.8;
-            const endZoom = 11.5;
-            const midZoom = 13.0;
-            let targetZoom = midZoom;
+          // Gentle dampened bearing at cruising altitude to eliminate visual dizziness
+          const dynamicBearing = isNorthLocked
+            ? 0
+            : travelFraction >= 0.15 && travelFraction <= 0.85
+            ? smoothedBearing * 0.4
+            : smoothedBearing;
 
-            if (travelFraction < 0.25) {
-              targetZoom = startZoom - (travelFraction / 0.25) * (startZoom - midZoom);
-            } else if (travelFraction > 0.75) {
-              targetZoom = midZoom - ((travelFraction - 0.75) / 0.25) * (midZoom - endZoom);
+          map.jumpTo({
+            center: [currentSample.lng, currentSample.lat],
+            zoom: dynamicZoom,
+            pitch: dynamicPitch,
+            bearing: dynamicBearing,
+          });
+        } else {
+          // Standard Choreography for local/short routes (<= 40km)
+          switch (routeConfig.cameraMode) {
+            case 'chase-3d': {
+              map.jumpTo({
+                center: [currentSample.lng, currentSample.lat],
+                zoom: routeConfig.cameraZoom || 13.2,
+                pitch: routeConfig.cameraPitch || 50,
+                bearing: isNorthLocked ? 0 : smoothedBearing + (routeConfig.cameraBearingOffset || 0),
+              });
+              break;
             }
 
-            map.jumpTo({
-              center: [currentSample.lng, currentSample.lat],
-              zoom: targetZoom,
-              pitch: 35,
-              bearing: isNorthLocked ? 0 : smoothedBearing * 0.3,
-            });
-            break;
-          }
+            case 'dynamic-overview': {
+              const startZoom = 13.8;
+              const endZoom = 11.5;
+              const midZoom = 13.0;
+              let targetZoom = midZoom;
 
-          case 'top-down-2d': {
-            map.jumpTo({
-              center: [currentSample.lng, currentSample.lat],
-              zoom: routeConfig.cameraZoom || 12.5,
-              pitch: 0,
-              bearing: 0,
-            });
-            break;
-          }
+              if (travelFraction < 0.25) {
+                targetZoom = startZoom - (travelFraction / 0.25) * (startZoom - midZoom);
+              } else if (travelFraction > 0.75) {
+                targetZoom = midZoom - ((travelFraction - 0.75) / 0.25) * (midZoom - endZoom);
+              }
 
-          case 'cinematic-orbit': {
-            const orbitBearing = isNorthLocked ? 0 : (travelFraction * 360) % 360;
-            map.jumpTo({
-              center: [currentSample.lng, currentSample.lat],
-              zoom: 12.8,
-              pitch: 45,
-              bearing: orbitBearing,
-            });
-            break;
-          }
+              map.jumpTo({
+                center: [currentSample.lng, currentSample.lat],
+                zoom: targetZoom,
+                pitch: 35,
+                bearing: isNorthLocked ? 0 : smoothedBearing * 0.3,
+              });
+              break;
+            }
 
-          case 'fixed-3d':
-          default: {
-            map.jumpTo({
-              center: [currentSample.lng, currentSample.lat],
-              zoom: routeConfig.cameraZoom || 13.0,
-              pitch: routeConfig.cameraPitch || 50,
-              bearing: isNorthLocked ? 0 : smoothedBearing,
-            });
-            break;
+            case 'top-down-2d': {
+              map.jumpTo({
+                center: [currentSample.lng, currentSample.lat],
+                zoom: routeConfig.cameraZoom || 12.5,
+                pitch: 0,
+                bearing: 0,
+              });
+              break;
+            }
+
+            case 'cinematic-orbit': {
+              const orbitBearing = isNorthLocked ? 0 : (travelFraction * 360) % 360;
+              map.jumpTo({
+                center: [currentSample.lng, currentSample.lat],
+                zoom: 12.8,
+                pitch: 45,
+                bearing: orbitBearing,
+              });
+              break;
+            }
+
+            case 'fixed-3d':
+            default: {
+              map.jumpTo({
+                center: [currentSample.lng, currentSample.lat],
+                zoom: routeConfig.cameraZoom || 13.0,
+                pitch: routeConfig.cameraPitch || 50,
+                bearing: isNorthLocked ? 0 : smoothedBearing,
+              });
+              break;
+            }
           }
         }
       } else {
         // ARRIVAL & ZOOM-OUT ANIMATION:
         // Interpolate to full overview, then hold the complete route trail for ~3 seconds before video ends
         const t = Math.min(1.0, Math.max(0.0, (progress - pArrive) / (pOverview - pArrive)));
-        // Smooth easing for zoom out
-        const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        // Smooth cubic easing for zoom out
+        const ease = easeInOutCubic(t);
 
         const destLng = currentSample.lng;
         const destLat = currentSample.lat;
-        const destZoom = routeConfig.cameraZoom || 13.0;
-        const destPitch = routeConfig.cameraPitch || 50;
+        const isLongRoute = (calculatedRoute.totalDistanceKm || 0) > 40;
+        const destZoom = isLongRoute ? Math.max(13.5, routeConfig.cameraZoom || 13.5) : (routeConfig.cameraZoom || 13.0);
+        const destPitch = isLongRoute ? 45 : (routeConfig.cameraPitch || 50);
         const destBearing = isNorthLocked ? 0 : smoothedBearing;
 
         // Target Overview camera fitting the route bounds
