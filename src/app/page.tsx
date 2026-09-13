@@ -5,7 +5,6 @@ import {
   MapPin, 
   Settings2, 
   Video, 
-  Compass, 
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { RouteConfig, PresetRoute } from '@/types/route';
@@ -159,13 +158,23 @@ export default function Home() {
       {/* Top Studio Header - LIGHT THEME */}
       <header className="h-16 border-b border-[#dcd4c6] bg-white/80 backdrop-blur-xl px-6 flex items-center justify-between z-30 sticky top-0">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#EB5E28] to-[#c2593f] flex items-center justify-center shadow-md shadow-[#EB5E28]/20">
-            <Compass className="w-5 h-5 text-white animate-spin-slow" />
+          <div className="relative w-11 h-11 rounded-full overflow-hidden shadow-md shadow-[#EB5E28]/15 border border-[#dcd4c6] bg-white flex-shrink-0">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo.png"
+              alt="Map Animation Generator"
+              className="w-full h-full object-cover"
+            />
           </div>
           <div>
-            <h1 className="font-bold text-base tracking-tight text-[#252422]">
-              Map Animation Generator
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-base tracking-tight text-[#252422]">
+                Map Animation Generator
+              </h1>
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#EB5E28]/10 text-[#EB5E28] border border-[#EB5E28]/20 hidden sm:inline-block">
+                by Mark no Nihon Tabi
+              </span>
+            </div>
             <p className="text-xs text-[#736d65]">
               Create animated 3D route travel videos with custom train models & travel time badges
             </p>
