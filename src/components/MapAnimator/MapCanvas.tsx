@@ -719,6 +719,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     }
   }, [calculatedRoute]);
 
+  const routeConfigRef = useRef(routeConfig);
+  routeConfigRef.current = routeConfig;
+
+  const calculatedRouteRef = useRef(calculatedRoute);
+  calculatedRouteRef.current = calculatedRoute;
+
+  const midpointCoordRef = useRef(midpointCoord);
+  midpointCoordRef.current = midpointCoord;
+
   // Preload category glyph image for canvas export
   useEffect(() => {
     const cat = getEffectiveModeCategory(routeConfig);
@@ -814,6 +823,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      const routeConfig = routeConfigRef.current;
+      const calculatedRoute = calculatedRouteRef.current;
+      const midpointCoord = midpointCoordRef.current;
 
       // 0. Fill solid opaque background so video encoder never samples transparent black
       const baseBg =
@@ -993,7 +1006,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       ctx.fillText(attributionText, pillX + padX, pillY + pillH / 2);
       ctx.restore();
     },
-    [calculatedRoute, routeConfig]
+    []
   );
 
   // Initialize Map
@@ -1115,6 +1128,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
   // Setup Journey Route Layers (Base track + Traveled Glowing Active Trail)
   const setupRouteLayers = (map: maplibregl.Map) => {
+    const calculatedRoute = calculatedRouteRef.current;
     if (!calculatedRoute || !calculatedRoute.coordinates.length) return;
 
     [
@@ -1315,6 +1329,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   const updateProgressVisuals = useCallback(
     (progress: number) => {
       const map = mapInstanceRef.current;
+      const calculatedRoute = calculatedRouteRef.current;
+      const routeConfig = routeConfigRef.current;
+      const midpointCoord = midpointCoordRef.current;
       if (!map || !calculatedRoute || !calculatedRoute.coordinates.length) return;
 
       const duration = routeConfig.durationSeconds || 10;
@@ -1440,7 +1457,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
       // Confetti removed per design requirement
     },
-    [calculatedRoute, routeConfig, updateScreenOverlays, midpointCoord]
+    [updateScreenOverlays]
   );
 
   const onProgressChangeRef = useRef(onProgressChange);
@@ -1524,11 +1541,36 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   // Imperative handle for video exporter and controls
   useImperativeHandle(ref, () => ({
     renderFrameAtProgress: async (progress: number) => {
-      progressRef.current = progress;
-      updateProgressVisuals(progress);
-
       const map = mapInstanceRef.current;
-      if (!map) return;
+      const currentRoute = calculatedRouteRef.current;
+      const currentConfig = routeConfigRef.current;
+      if (!map || !currentRoute) return;
+
+      progressRef.current = progress;
+
+      // On frame 0, strictly enforce camera positioning to match current route bounds/start
+      if (progress === 0) {
+        smoothedBearingRef.current = null;
+        exportSmoothedBearingRef.current = null;
+        if (currentConfig.cameraMode === 'static-overview' && currentRoute.bounds) {
+          map.fitBounds(currentRoute.bounds, {
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
+            duration: 0,
+            pitch: 20,
+            bearing: 0,
+          });
+        } else if (currentRoute.coordinates.length > 0) {
+          const { zoom, pitch } = getDynamicFollowZoomPitch(currentRoute.totalDistanceKm);
+          map.jumpTo({
+            center: currentRoute.coordinates[0],
+            zoom,
+            pitch,
+            bearing: 0,
+          });
+        }
+      }
+
+      updateProgressVisuals(progress);
 
       // Wait until all map tiles for current frame viewpoint are fully loaded (prevents washed-out/blank tiles)
       if (!map.areTilesLoaded()) {
@@ -1562,34 +1604,38 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       });
     },
     getCanvas: () => {
-      if (!compositeCanvasRef.current && mapInstanceRef.current) {
-        drawCompositeFrame(currentProgress);
+      if (mapInstanceRef.current) {
+        drawCompositeFrame(progressRef.current);
       }
       return compositeCanvasRef.current || mapInstanceRef.current?.getCanvas() || null;
     },
     jumpToProgress: (progress: number) => {
       progressRef.current = progress;
+      const currentConfig = routeConfigRef.current;
+      const currentRoute = calculatedRouteRef.current;
       setIsDestinationRevealed(
-        checkDestinationReached(progress, routeConfig.durationSeconds || 8, calculatedRoute)
+        checkDestinationReached(progress, currentConfig.durationSeconds || 8, currentRoute)
       );
-      const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 8);
+      const { pArrive } = getTimelinePhases(currentConfig.durationSeconds || 8);
       setIsArrivedState(progress >= pArrive);
       updateProgressVisuals(progress);
     },
     resetCamera: () => {
-      if (mapInstanceRef.current && calculatedRoute) {
+      const currentRoute = calculatedRouteRef.current;
+      const currentConfig = routeConfigRef.current;
+      if (mapInstanceRef.current && currentRoute) {
         smoothedBearingRef.current = null;
-        if (routeConfig.cameraMode === 'static-overview') {
-          mapInstanceRef.current.fitBounds(calculatedRoute.bounds, {
+        if (currentConfig.cameraMode === 'static-overview') {
+          mapInstanceRef.current.fitBounds(currentRoute.bounds, {
             padding: { top: 80, bottom: 160, left: 80, right: 80 },
             duration: 800,
             pitch: 20,
             bearing: 0,
           });
         } else {
-          const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
+          const { zoom, pitch } = getDynamicFollowZoomPitch(currentRoute.totalDistanceKm);
           mapInstanceRef.current.jumpTo({
-            center: [routeConfig.startPoint.lng, routeConfig.startPoint.lat],
+            center: [currentConfig.startPoint.lng, currentConfig.startPoint.lat],
             zoom,
             pitch,
             bearing: 0,
