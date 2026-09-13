@@ -9,6 +9,33 @@ export type VehicleType =
   | 'ship'
   | 'custom';
 
+export type ModeCategory = 
+  | 'walk' 
+  | 'bicycle' 
+  | 'car' 
+  | 'bus' 
+  | 'train' 
+  | 'shinkansen' 
+  | 'flight' 
+  | 'ship';
+
+export function getEffectiveModeCategory(config: { vehicle: VehicleType; modeCategory?: ModeCategory }): ModeCategory {
+  if (config.vehicle === 'custom') {
+    return config.modeCategory || 'train';
+  }
+  switch (config.vehicle) {
+    case 'train': return 'train';
+    case 'shinkansen': return 'shinkansen';
+    case 'car': return 'car';
+    case 'airplane': return 'flight';
+    case 'bus': return 'bus';
+    case 'bicycle': return 'bicycle';
+    case 'walk': return 'walk';
+    case 'ship': return 'ship';
+    default: return 'train';
+  }
+}
+
 export type CameraMode = 'static-overview' | 'dynamic-follow';
 
 export type AspectRatio = '16:9';
@@ -29,6 +56,7 @@ export interface RouteConfig {
   endPoint: GeoPoint;
   waypoints: GeoPoint[];
   vehicle: VehicleType;
+  modeCategory?: ModeCategory;
   travelTimeText: string;
   distanceText?: string;
   speedText?: string;
@@ -61,6 +89,7 @@ export interface PresetRoute {
   startPoint: GeoPoint;
   endPoint: GeoPoint;
   vehicle: VehicleType;
+  modeCategory?: ModeCategory;
   travelTimeText: string;
   durationSeconds: number;
   cameraMode: CameraMode;
