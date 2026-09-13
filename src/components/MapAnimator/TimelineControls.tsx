@@ -76,7 +76,7 @@ export const TimelineControls: React.FC<TimelineControlsProps> = ({
         {/* Export Video Button */}
         <button
           onClick={onExportClick}
-          className="px-5 py-2.5 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-[#252422] font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95 whitespace-nowrap"
+          className="px-5 py-2.5 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95 whitespace-nowrap"
         >
           <Video className="w-4 h-4" />
           <span>Export Video</span>
@@ -98,7 +98,7 @@ export const TimelineControls: React.FC<TimelineControlsProps> = ({
         <div className="flex items-center gap-2">
           <span className="font-medium text-[#736d65]">Video Duration:</span>
           <div className="flex items-center gap-1.5">
-            {[5, 8, 12, 16].map((sec) => (
+            {[8, 10, 12, 16].map((sec) => (
               <button
                 key={sec}
                 onClick={() => onDurationChange(sec)}
