@@ -4,7 +4,6 @@ import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, f
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
-import confetti from 'canvas-confetti';
 import { RouteConfig, MapTheme, AspectRatio } from '@/types/route';
 import { CalculatedRoute, RouteSamplePoint } from '@/services/routing';
 import { VehicleIcon, getVehicleSvgDataUri } from './VehicleIcons';
@@ -280,6 +279,71 @@ export function getDynamicFollowZoomPitch(totalDistanceKm: number): { zoom: numb
   }
 }
 
+/**
+ * Side-View Orientation Logic:
+ * Keeps the 2D vehicle marker upright at all times (wheels pointing downward).
+ * - Heading East/Right (0° to 180°): scaleX = 1
+ * - Heading West/Left (-180° to 0° or 180° to 360°): scaleX = -1
+ * - Vertical tilt angle clamped to ±15° to follow subtle track inclination without flipping
+ */
+export function getSideViewOrientation(bearing: number): { scaleX: number; tiltDeg: number } {
+  // Normalize bearing to [-180, 180]
+  const normBearing = ((bearing % 360) + 540) % 360 - 180;
+
+  // Heading East/Right: scaleX = 1; Heading West/Left: scaleX = -1
+  const isHeadingWest = normBearing < 0;
+  const scaleX = isHeadingWest ? -1 : 1;
+
+  // Trajectory direction vector in screen coordinates
+  // 0° = North (dy < 0, dx = 0), 90° = East (dy = 0, dx > 0), 180° = South (dy > 0, dx = 0)
+  const rad = (normBearing * Math.PI) / 180;
+  const dx = Math.sin(rad);
+  const dy = -Math.cos(rad);
+
+  // Vertical inclination angle relative to horizontal:
+  // Heading uphill / north: tilt nose up (negative angle)
+  // Heading downhill / south: tilt nose down (positive angle)
+  const rawPitch = Math.atan2(dy, Math.abs(dx)) * (180 / Math.PI);
+  // Clamp vertical tilt angle to a maximum of ±15 degrees to follow track inclination without flipping
+  const tiltDeg = Math.max(-15, Math.min(15, rawPitch));
+
+  return { scaleX, tiltDeg };
+}
+
+export function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+/**
+ * Checks whether the destination marker, label, and arrival banner should be revealed.
+ * Stays hidden initially (progress <= 0.01) and while traveling.
+ * Reveals only when progress >= 0.98 or within the final 0.5 km of the destination.
+ */
+export function checkDestinationReached(
+  progress: number,
+  durationSeconds: number,
+  calculatedRoute: CalculatedRoute | null
+): boolean {
+  if (!calculatedRoute || !calculatedRoute.coordinates || calculatedRoute.coordinates.length < 2 || progress <= 0.01) {
+    return false;
+  }
+  const { pArrive } = getTimelinePhases(durationSeconds);
+  const isArrived = progress >= pArrive;
+  const travelFraction = isArrived ? 1.0 : progress / pArrive;
+  const easedT = easeInOutQuad(travelFraction);
+  const totalKm = calculatedRoute.totalDistanceKm || 0;
+  const currentDistKm = Math.min(totalKm, Math.max(0, easedT * totalKm));
+  const remainingDistKm = totalKm - currentDistKm;
+
+  return (
+    progress >= 0.98 ||
+    travelFraction >= 0.98 ||
+    (totalKm > 0 && remainingDistKm <= 0.5 && currentDistKm > 0.1)
+  );
+}
+
 // Canvas Overlay Drawing Helpers for Video Export
 function drawPinOnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -287,12 +351,18 @@ function drawPinOnCanvas(
   y: number,
   title: string,
   type: 'start' | 'end',
-  scale: number
+  scale: number,
+  popScale: number = 1
 ) {
   ctx.save();
+  if (popScale !== 1) {
+    ctx.translate(x, y);
+    ctx.scale(popScale, popScale);
+    ctx.translate(-x, -y);
+  }
   const isStart = type === 'start';
   const accentColor = isStart ? '#059669' : '#EB5E28';
-  const tagText = isStart ? 'START' : 'DESTINATION';
+  const tagText = isStart ? 'START' : 'ARRIVED';
 
   // 1. Ground shadow
   ctx.beginPath();
@@ -378,42 +448,6 @@ function drawPinOnCanvas(
   ctx.restore();
 }
 
-function drawTimeBadgeOnCanvas(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  text: string,
-  scale: number
-) {
-  ctx.save();
-  ctx.font = `bold ${Math.round(14 * scale)}px sans-serif`;
-  const textWidth = ctx.measureText(text).width;
-  const pillW = textWidth + 28 * scale;
-  const pillH = 32 * scale;
-  const pillX = x - pillW / 2;
-  const pillY = y - pillH / 2;
-
-  // Shadow
-  ctx.shadowColor = 'rgba(0,0,0,0.45)';
-  ctx.shadowBlur = 10 * scale;
-  ctx.shadowOffsetY = 4 * scale;
-
-  // Background
-  ctx.fillStyle = 'rgba(255, 252, 242, 0.95)';
-  ctx.strokeStyle = '#EB5E28';
-  ctx.lineWidth = 2 * scale;
-  ctx.beginPath();
-  ctx.roundRect(pillX, pillY, pillW, pillH, 16 * scale);
-  ctx.fill();
-  ctx.stroke();
-
-  // Text
-  ctx.shadowColor = 'transparent';
-  ctx.fillStyle = '#EB5E28';
-  ctx.fillText(text, pillX + 14 * scale, pillY + pillH / 2 + 5 * scale);
-  ctx.restore();
-}
-
 function drawTitleOverlayOnCanvas(
   ctx: CanvasRenderingContext2D,
   routeConfig: RouteConfig,
@@ -453,50 +487,116 @@ function drawArrivalCardOnCanvas(
   scaleY: number
 ) {
   ctx.save();
-  const cardW = 400 * scaleX;
-  const cardH = 48 * scaleY;
+  const cardW = 440 * scaleX;
+  const cardH = 50 * scaleY;
   const cardX = (ctx.canvas.width - cardW) / 2;
   const cardY = ctx.canvas.height - cardH - 34 * scaleY;
 
   // Shadow
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
   ctx.shadowBlur = 14 * scaleX;
   ctx.shadowOffsetY = 4 * scaleY;
 
-  // Background
+  // Background card pill
   ctx.fillStyle = 'rgba(255, 252, 242, 0.96)';
   ctx.strokeStyle = '#EB5E28';
   ctx.lineWidth = 2 * scaleX;
   ctx.beginPath();
-  ctx.roundRect(cardX, cardY, cardW, cardH, 12 * scaleX);
+  ctx.roundRect(cardX, cardY, cardW, cardH, 14 * scaleX);
   ctx.fill();
   ctx.stroke();
 
   ctx.shadowColor = 'transparent';
 
-  // Tag: ARRIVED
-  const tagW = 64 * scaleX;
-  const tagH = 24 * scaleY;
+  // Tag / Icon Pill
+  const tagW = 32 * scaleX;
+  const tagH = 26 * scaleY;
   const tagX = cardX + 12 * scaleX;
   const tagY = cardY + (cardH - tagH) / 2;
   ctx.fillStyle = '#EB5E28';
   ctx.beginPath();
-  ctx.roundRect(tagX, tagY, tagW, tagH, 6 * scaleX);
+  ctx.roundRect(tagX, tagY, tagW, tagH, 8 * scaleX);
   ctx.fill();
 
-  ctx.font = `bold ${Math.round(10 * scaleX)}px sans-serif`;
+  ctx.font = `${Math.round(13 * scaleX)}px sans-serif`;
   ctx.fillStyle = '#ffffff';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
-  ctx.fillText('ARRIVED', tagX + tagW / 2, tagY + tagH / 2);
+  ctx.fillText('🏁', tagX + tagW / 2, tagY + tagH / 2);
 
-  // Text details
+  // Text details: start ➔ end • distance • time
   ctx.textAlign = 'left';
   ctx.font = `bold ${Math.round(12.5 * scaleX)}px sans-serif`;
   ctx.fillStyle = '#252422';
-  const text = `${routeConfig.startPoint.name} ➔ ${routeConfig.endPoint.name} • ${totalDistanceKm.toFixed(1)} km`;
+  const timeText = routeConfig.travelTimeText ? ` • ${routeConfig.travelTimeText}` : '';
+  const text = `${routeConfig.startPoint.name} ➔ ${routeConfig.endPoint.name} • ${totalDistanceKm.toFixed(1)} km${timeText}`;
   ctx.fillText(text, tagX + tagW + 10 * scaleX, cardY + cardH / 2);
 
+  ctx.restore();
+}
+
+
+function drawTrailOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  coordinates: [number, number][],
+  map: maplibregl.Map,
+  scaleX: number,
+  scaleY: number,
+  trailColor: string = '#FF4D00',
+  coreWidth: number = 3.5
+) {
+  if (!coordinates || coordinates.length < 2) return;
+
+  const points: { x: number; y: number }[] = [];
+  for (let i = 0; i < coordinates.length; i++) {
+    const pt = map.project(coordinates[i]);
+    points.push({ x: pt.x * scaleX, y: pt.y * scaleY });
+  }
+
+  if (points.length < 2) return;
+
+  const trace = () => {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+  };
+
+  // 1. Shadow Layer: Soft blurred drop shadow underneath the active trail (#000000, opacity 0.2, blur: 3px, width: 8px)
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+  ctx.lineWidth = 8 * scaleX;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.2)';
+  ctx.shadowBlur = 3 * scaleX;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 1 * scaleY;
+  trace();
+  ctx.stroke();
+  ctx.restore();
+
+  // 2. Casing Layer: High-contrast white outer casing (#FFFFFF, opacity 0.95, width: 6px)
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 6 * scaleX;
+  ctx.globalAlpha = 0.95;
+  trace();
+  ctx.stroke();
+  ctx.restore();
+
+  // 3. Core Line: Crisp, vibrant inner stroke (#FF4D00 or dynamic theme color, width: 3.5px)
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = trailColor || '#FF4D00';
+  ctx.lineWidth = coreWidth * scaleX;
+  ctx.globalAlpha = 1.0;
+  trace();
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -518,15 +618,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   const isMapLoadedRef = useRef<boolean>(false);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number | null>(null);
-  const confettiFiredRef = useRef<boolean>(false);
+  const trailCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const activeCoordsRef = useRef<[number, number][]>([]);
   const progressRef = useRef<number>(currentProgress);
   const isPlayingRef = useRef<boolean>(isPlaying);
   const smoothedBearingRef = useRef<number | null>(null);
   const exportSmoothedBearingRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    progressRef.current = currentProgress;
-  }, [currentProgress]);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -541,24 +638,73 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
   const [startPinScreenPos, setStartPinScreenPos] = useState<{ x: number; y: number } | null>(null);
   const [endPinScreenPos, setEndPinScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const [isDestinationRevealed, setIsDestinationRevealed] = useState<boolean>(false);
 
-  // Preload vehicle SVG image for canvas composite rendering
   useEffect(() => {
-    const dataUri = getVehicleSvgDataUri(
-      routeConfig.vehicle,
-      routeConfig.trainModel || 'azuma',
-      '#EB5E28'
+    progressRef.current = currentProgress;
+    const reached = checkDestinationReached(
+      currentProgress,
+      routeConfig.durationSeconds || 8,
+      calculatedRoute
     );
+    setIsDestinationRevealed(reached);
+  }, [currentProgress, routeConfig.durationSeconds, calculatedRoute]);
+
+  // Preload vehicle image (SVG or custom uploaded image) for canvas composite rendering
+  useEffect(() => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.src = dataUri;
+    if (routeConfig.vehicle === 'custom' && routeConfig.customVehicleImage) {
+      img.src = routeConfig.customVehicleImage;
+    } else {
+      img.src = getVehicleSvgDataUri(routeConfig.vehicle, '#EB5E28');
+    }
     vehicleImageRef.current = img;
-  }, [routeConfig.vehicle, routeConfig.trainModel]);
+  }, [routeConfig.vehicle, routeConfig.customVehicleImage]);
 
   // Aspect ratio helper (16:9 YouTube Landscape)
   const getAspectRatioClasses = (_ratio: AspectRatio) => {
     return 'aspect-[16/9] w-full max-w-5xl mx-auto shadow-2xl rounded-2xl';
   };
+
+  const renderTrailCanvas = useCallback(() => {
+    const map = mapInstanceRef.current;
+    const trailCanvas = trailCanvasRef.current;
+    const coords = activeCoordsRef.current;
+    if (!map || !trailCanvas) return;
+    const container = mapContainerRef.current;
+    if (!container) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+
+    if (trailCanvas.width !== Math.round(w * dpr) || trailCanvas.height !== Math.round(h * dpr)) {
+      trailCanvas.width = Math.round(w * dpr);
+      trailCanvas.height = Math.round(h * dpr);
+      trailCanvas.style.width = `${w}px`;
+      trailCanvas.style.height = `${h}px`;
+    }
+
+    const ctx = trailCanvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    if (coords && coords.length >= 2) {
+      drawTrailOnCanvas(
+        ctx,
+        coords,
+        map,
+        1,
+        1,
+        routeConfig.trailColor || '#FF4D00',
+        routeConfig.trailWidth || 3.5
+      );
+    }
+    ctx.restore();
+  }, [routeConfig.trailColor, routeConfig.trailWidth]);
 
   // Draw complete composite frame (Map + Vehicle + Badges + Pins) onto canvas for Video Export
   const drawCompositeFrame = useCallback(
@@ -600,15 +746,54 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const scaleX = mapCanvas.width / containerWidth;
       const scaleY = mapCanvas.height / containerHeight;
 
+      // 1b. Draw Active Glowing Traveled Route Trail directly on export composite canvas
+      let exportCoords = activeCoordsRef.current;
+      if ((!exportCoords || exportCoords.length < 2) && calculatedRoute && calculatedRoute.coordinates.length && progress > 0.0001) {
+        const routeLine = turf.lineString(calculatedRoute.coordinates);
+        const totalDistanceKm = turf.length(routeLine, { units: 'kilometers' });
+        const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 10);
+        const isArrived = progress >= pArrive;
+        const travelFraction = isArrived ? 1.0 : progress / pArrive;
+        const easedT = easeInOutQuad(travelFraction);
+        const currentDistKm = Math.min(totalDistanceKm, Math.max(0.001, easedT * totalDistanceKm));
+        try {
+          const sliced = turf.lineSliceAlong(routeLine, 0, currentDistKm, { units: 'kilometers' });
+          exportCoords = sliced.geometry.coordinates as [number, number][];
+        } catch {
+          // fallback
+        }
+      }
+      if (exportCoords && exportCoords.length >= 2) {
+        drawTrailOnCanvas(
+          ctx,
+          exportCoords,
+          map,
+          scaleX,
+          scaleY,
+          routeConfig.trailColor || '#FF4D00',
+          routeConfig.trailWidth || 3.5
+        );
+      }
+
       // 2. Draw Station Pins if enabled
+      const isDestinationRevealedForExport = checkDestinationReached(
+        progress,
+        routeConfig.durationSeconds || 10,
+        calculatedRoute
+      );
+
       if (routeConfig.showStationPins) {
         if (routeConfig.startPoint) {
           const p = map.project([routeConfig.startPoint.lng, routeConfig.startPoint.lat]);
           drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.startPoint.name, 'start', scaleX);
         }
-        if (routeConfig.endPoint) {
+        if (routeConfig.endPoint && isDestinationRevealedForExport) {
           const p = map.project([routeConfig.endPoint.lng, routeConfig.endPoint.lat]);
-          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX);
+          const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
+          const travelFrac = progress >= pArr ? 1.0 : progress / pArr;
+          const revealT = Math.min(1.0, Math.max(0, (travelFrac - 0.98) / 0.02));
+          const popScale = Math.max(0.5, Math.min(1.15, easeOutBack(revealT)));
+          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale);
         }
       }
 
@@ -650,18 +835,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         const vx = vp.x * scaleX;
         const vy = vp.y * scaleY;
 
-        // Draw Floating Distance Badge above Vehicle (dynamically increasing distance)
-        if (routeConfig.showDistanceBadge) {
-          const currentDistance = currentDistKm.toFixed(1);
-          const badgeText = `${currentDistance} km`;
-          drawTimeBadgeOnCanvas(ctx, vx, vy - 46 * scaleY, badgeText, scaleX);
-        }
-
-        // Draw Vehicle Icon
+        // Draw Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt)
         if (vehicleImageRef.current && vehicleImageRef.current.complete) {
+          const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(smoothedBearing);
           ctx.save();
           ctx.translate(vx, vy);
-          ctx.rotate((smoothedBearing * Math.PI) / 180);
+          ctx.scale(vehFlipX, 1);
+          ctx.rotate((tiltDeg * Math.PI) / 180);
           const vehicleSize = 58 * scaleX;
           ctx.shadowColor = 'rgba(0,0,0,0.45)';
           ctx.shadowBlur = 10 * scaleX;
@@ -677,7 +857,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
 
       // 5. Draw Arrival celebration card when arriving at destination and during complete route showcase
-      if (isArrived && calculatedRoute) {
+      if (isDestinationRevealedForExport && calculatedRoute) {
         drawArrivalCardOnCanvas(ctx, routeConfig, calculatedRoute.totalDistanceKm, scaleX, scaleY);
       }
 
@@ -740,8 +920,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       preserveDrawingBuffer: true, // Essential for Video export
       fadeDuration: 0, // Eliminate tile loading fade lag
       maxTileCacheSize: 2500, // Preload and keep tiles in memory for long routes
-      interactive: true,
+      interactive: false,
+      dragPan: false,
+      scrollZoom: false,
+      boxZoom: false,
+      dragRotate: false,
+      keyboard: false,
+      doubleClickZoom: false,
+      touchZoomRotate: false,
+      touchPitch: false,
     } as any);
+
+    // Completely lock map preview screen: user cannot move, pan, rotate, or zoom
+    map.dragPan?.disable();
+    map.scrollZoom?.disable();
+    map.boxZoom?.disable();
+    map.dragRotate?.disable();
+    map.keyboard?.disable();
+    map.doubleClickZoom?.disable();
+    map.touchZoomRotate?.disable();
+    map.touchPitch?.disable();
 
     map.on('load', () => {
       isMapLoadedRef.current = true;
@@ -759,13 +957,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
             pitch: 20,
             bearing: 0,
           });
+          let initTimer: ReturnType<typeof setTimeout> | null = null;
           const onInitIdle = () => {
+            if (initTimer) clearTimeout(initTimer);
             map.off('idle', onInitIdle);
             setupRouteLayers(map);
             updateProgressVisuals(progressRef.current);
           };
-          map.on('idle', onInitIdle);
-          setTimeout(onInitIdle, 1200);
+          map.once('idle', onInitIdle);
+          initTimer = setTimeout(onInitIdle, 800);
         } else {
           // Mode B: Dynamic Follow — pre-cache overview tiles, then jump to start with scale-aware zoom
           map.fitBounds(calculatedRoute.bounds, { padding: 80, duration: 0, pitch: 0, bearing: 0 });
@@ -788,6 +988,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     });
 
     map.on('move', () => {
+      renderTrailCanvas();
       if (!isPlayingRef.current) {
         updateScreenOverlays();
       }
@@ -813,6 +1014,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     [
       'journey-base-casing',
       'journey-base-line',
+      'journey-active-shadow',
       'journey-active-glow',
       'journey-active-casing',
       'journey-active-line',
@@ -836,7 +1038,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       if (map.getSource(id)) map.removeSource(id);
     });
 
-    // 1. Base route source (full route path, subtle dashed planned route track)
+    // 1. Base route source (full upcoming route preview)
     map.addSource('journey-base-source', {
       type: 'geojson',
       data: {
@@ -849,23 +1051,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       },
     });
 
-    // Base subtle casing
-    map.addLayer({
-      id: 'journey-base-casing',
-      type: 'line',
-      source: 'journey-base-source',
-      layout: {
-        'line-cap': 'round',
-        'line-join': 'round',
-      },
-      paint: {
-        'line-color': '#ffffff',
-        'line-width': 5.5,
-        'line-opacity': 0.45,
-      },
-    });
-
-    // Base subtle line
+    // Base Layer: Subtle dashed preview line for the upcoming full route (#64748b, opacity 0.35, dasharray [1.5, 2])
     map.addLayer({
       id: 'journey-base-line',
       type: 'line',
@@ -875,10 +1061,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         'line-join': 'round',
       },
       paint: {
-        'line-color': '#EB5E28',
+        'line-color': '#64748b',
         'line-width': 3,
         'line-opacity': 0.35,
-        'line-dasharray': [2, 2],
+        'line-dasharray': [1.5, 2],
       },
     });
 
@@ -891,9 +1077,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       },
     });
 
-    // Traveled Outer Glow
+    // Shadow Layer: Soft blurred drop shadow underneath the active trail (#000000, opacity 0.2, blur: 3px, width: 8px)
     map.addLayer({
-      id: 'journey-active-glow',
+      id: 'journey-active-shadow',
       type: 'line',
       source: 'journey-active-source',
       layout: {
@@ -901,14 +1087,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         'line-join': 'round',
       },
       paint: {
-        'line-color': '#EB5E28',
-        'line-width': 14,
-        'line-opacity': 0.4,
-        'line-blur': 4,
+        'line-color': '#000000',
+        'line-width': 8,
+        'line-opacity': 0.2,
+        'line-blur': 3,
       },
     });
 
-    // Traveled Crisp High-Contrast White Casing
+    // Casing Layer: High-contrast white outer casing (#FFFFFF, opacity 0.95, width: 6px)
     map.addLayer({
       id: 'journey-active-casing',
       type: 'line',
@@ -918,13 +1104,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         'line-join': 'round',
       },
       paint: {
-        'line-color': '#ffffff',
-        'line-width': 7.5,
+        'line-color': '#FFFFFF',
+        'line-width': 6,
         'line-opacity': 0.95,
       },
     });
 
-    // Traveled Active Vibrant Orange/Coral Line
+    // Core Line: Crisp, vibrant inner stroke (#FF4D00 or dynamic theme color, width: 3.5px)
     map.addLayer({
       id: 'journey-active-line',
       type: 'line',
@@ -934,8 +1120,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         'line-join': 'round',
       },
       paint: {
-        'line-color': '#EB5E28',
-        'line-width': 5,
+        'line-color': routeConfig.trailColor || '#FF4D00',
+        'line-width': 3.5,
         'line-opacity': 1.0,
       },
     });
@@ -956,13 +1142,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
             pitch: 20,
             bearing: 0,
           });
+          let routeTimer: ReturnType<typeof setTimeout> | null = null;
           const onRouteIdle = () => {
+            if (routeTimer) clearTimeout(routeTimer);
             map.off('idle', onRouteIdle);
             setupRouteLayers(map);
             updateProgressVisuals(currentProgress);
           };
-          map.on('idle', onRouteIdle);
-          setTimeout(onRouteIdle, 1200);
+          map.once('idle', onRouteIdle);
+          routeTimer = setTimeout(onRouteIdle, 800);
         } else {
           // Mode B: Dynamic Follow
           const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
@@ -1018,6 +1206,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const isArrived = progress >= pArrive;
       const travelFraction = isArrived ? 1.0 : progress / pArrive;
 
+      // Update destination reveal state in render loop
+      const destReached = checkDestinationReached(progress, duration, calculatedRoute);
+      setIsDestinationRevealed(destReached);
+
       // Requirement 2: easeInOutQuad progression over the configured duration
       const easedT = easeInOutQuad(travelFraction);
 
@@ -1041,10 +1233,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         frontCoord = startPt;
       } else {
         const safeSliceDist = Math.min(totalDistanceKm, Math.max(0.001, currentDistKm));
-        const sliced = turf.lineSliceAlong(routeLine, 0, safeSliceDist, { units: 'kilometers' });
-        activeCoords = sliced.geometry.coordinates as [number, number][];
-        frontCoord = activeCoords[activeCoords.length - 1];
+        try {
+          const sliced = turf.lineSliceAlong(routeLine, 0, safeSliceDist, { units: 'kilometers' });
+          activeCoords = sliced.geometry.coordinates as [number, number][];
+          frontCoord = activeCoords[activeCoords.length - 1];
+        } catch {
+          frontCoord = calculatedRoute.coordinates[0];
+          activeCoords = [calculatedRoute.coordinates[0], calculatedRoute.coordinates[1] || frontCoord];
+        }
       }
+
+      // Synchronize dedicated 60fps Trail Canvas overlay
+      activeCoordsRef.current = progress > 0.0001 ? activeCoords : [];
+      renderTrailCanvas();
 
       // Task 1: Look-ahead distance approach (1.0% - 2.0% of total distance) with angular Lerp
       // and [-180, 180] angle wrapping to eliminate 360-degree rotation snaps and rotation jitter
@@ -1069,6 +1270,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           },
         });
       }
+      map.triggerRepaint();
 
       const isStaticOverview = routeConfig.cameraMode === 'static-overview';
 
@@ -1115,22 +1317,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         setEndPinScreenPos({ x: ep.x, y: ep.y });
       }
 
-      // Trigger Confetti on arrival
-      if (progress >= pArrive && !confettiFiredRef.current) {
-        confettiFiredRef.current = true;
-        try {
-          confetti({
-            particleCount: 65,
-            spread: 80,
-            origin: { y: 0.6 },
-            zIndex: 9999,
-          });
-        } catch {
-          // ignore
-        }
-      } else if (progress < pArrive - 0.05) {
-        confettiFiredRef.current = false;
-      }
+      // Confetti removed per design requirement
     },
     [calculatedRoute, routeConfig, updateScreenOverlays]
   );
@@ -1161,6 +1348,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     // Reset to start if currently at end, or synchronize with currentProgress
     if (progressRef.current >= 0.999 || currentProgress >= 0.999) {
       progressRef.current = 0;
+      setIsDestinationRevealed(false);
       onProgressChangeRef.current(0);
       updateProgressVisualsRef.current(0);
     } else {
@@ -1253,6 +1441,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     },
     jumpToProgress: (progress: number) => {
       progressRef.current = progress;
+      setIsDestinationRevealed(
+        checkDestinationReached(progress, routeConfig.durationSeconds || 8, calculatedRoute)
+      );
       updateProgressVisuals(progress);
     },
     resetCamera: () => {
@@ -1278,13 +1469,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     },
   }));
 
-  const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 8);
+  const duration = routeConfig.durationSeconds || 8;
+  const { pArrive } = getTimelinePhases(duration);
   const isArrived = currentProgress >= pArrive;
+  const isDestReachedCalc = checkDestinationReached(currentProgress, duration, calculatedRoute);
+  const showDestinationPin = isDestinationRevealed || isDestReachedCalc;
 
   return (
-    <div className={`relative overflow-hidden bg-[#FFFCF2] border border-[#dcd4c6] ${getAspectRatioClasses(routeConfig.aspectRatio)}`}>
-      {/* WebGL Map Viewport */}
-      <div ref={mapContainerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
+    <div className={`relative overflow-hidden bg-[#FFFCF2] border border-[#dcd4c6] select-none ${getAspectRatioClasses(routeConfig.aspectRatio)}`}>
+      {/* WebGL Map Viewport - Locked against user movement/zoom */}
+      <div ref={mapContainerRef} className="w-full h-full cursor-default select-none pointer-events-none touch-none" />
+
+      {/* Real-time High-FPS Trail Canvas Overlay */}
+      <canvas ref={trailCanvasRef} className="absolute inset-0 pointer-events-none z-[5]" />
 
       {/* HTML Overlays (Pins, Vehicle, Badges, Titles) */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -1313,28 +1510,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           </div>
         )}
 
-        {/* Outstanding Destination Station Pin */}
-        {routeConfig.showStationPins && endPinScreenPos && (
+        {/* Outstanding Destination Station Pin - Hidden until destination arrival with smooth pop-in bounce */}
+        {routeConfig.showStationPins && endPinScreenPos && showDestinationPin && (
           <div
-            className="absolute -translate-x-1/2 -translate-y-full will-change-transform flex flex-col items-center z-10"
+            className="absolute -translate-x-1/2 -translate-y-full will-change-transform z-10 pointer-events-none"
             style={{ left: `${endPinScreenPos.x}px`, top: `${endPinScreenPos.y}px` }}
           >
-            {/* Prominent Card Pill with Arrival Highlight */}
-            <div className={`bg-white/95 text-[#252422] rounded-xl shadow-xl border border-[#EB5E28]/60 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 mb-1.5 select-none transition-all duration-300 ${
-              isArrived ? 'scale-110 ring-4 ring-[#EB5E28]/25 shadow-2xl border-[#EB5E28]' : ''
-            }`}>
-              <span className="px-1.5 py-0.5 rounded bg-[#EB5E28] text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
-                DESTINATION
-              </span>
-              <span className="text-xs font-bold text-[#252422] tracking-tight">
-                {routeConfig.endPoint.name}
-              </span>
-            </div>
-            {/* Pulsing Beacon & Pin Stalk */}
-            <div className="relative flex items-center justify-center">
-              <span className="absolute -inset-2.5 rounded-full bg-[#EB5E28]/35 animate-ping pointer-events-none" />
-              <div className="w-5 h-5 rounded-full bg-[#EB5E28] border-2 border-white shadow-lg flex items-center justify-center">
-                <div className="w-1.5 h-1.5 rounded-full bg-white" />
+            <div className="flex flex-col items-center animate-pop-in-bounce origin-bottom">
+              {/* Prominent Card Pill with Arrival Highlight */}
+              <div className="bg-white/95 text-[#252422] rounded-xl shadow-2xl border border-[#EB5E28] ring-4 ring-[#EB5E28]/25 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 mb-1.5 select-none scale-105">
+                <span className="px-1.5 py-0.5 rounded bg-[#EB5E28] text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
+                  ARRIVED
+                </span>
+                <span className="text-xs font-bold text-[#252422] tracking-tight">
+                  {routeConfig.endPoint.name}
+                </span>
+              </div>
+              {/* Pulsing Beacon & Pin Stalk */}
+              <div className="relative flex items-center justify-center">
+                <span className="absolute -inset-2.5 rounded-full bg-[#EB5E28]/35 animate-ping pointer-events-none" />
+                <div className="w-5 h-5 rounded-full bg-[#EB5E28] border-2 border-white shadow-lg flex items-center justify-center">
+                  <div className="w-1.5 h-1.5 rounded-full bg-white" />
+                </div>
               </div>
             </div>
           </div>
@@ -1349,36 +1546,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
               top: `${vehicleState.screenPos.y}px`,
             }}
           >
-            {/* Custom Travel Distance Badge (e.g. "12.4 km") */}
-            {routeConfig.showDistanceBadge && calculatedRoute && (
-              <div className="absolute left-1/2 -top-10 -translate-x-1/2 whitespace-nowrap z-20 pointer-events-none">
-                <div className="relative group">
-                  <div className="absolute -inset-0.5 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] rounded-full blur opacity-50"></div>
-                  <div className="relative px-3 py-0.5 bg-white/95 backdrop-blur-md rounded-full border border-[#EB5E28]/40 shadow-xl flex items-center justify-center text-xs font-bold text-[#EB5E28]">
-                    <span className="font-mono text-[11px] tracking-tight">
-                      {isArrived
-                        ? calculatedRoute.totalDistanceKm.toFixed(1)
-                        : (easeInOutQuad(currentProgress / pArrive) * calculatedRoute.totalDistanceKm).toFixed(1)} km
-                    </span>
-                  </div>
+            {/* Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt) */}
+            {(() => {
+              const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(vehicleState.point.bearing);
+              return (
+                <div
+                  className="will-change-transform"
+                  style={{
+                    transformOrigin: '50% 50%',
+                    transform: `scaleX(${vehFlipX}) rotate(${tiltDeg}deg) translateY(-${vehicleState.point.altitudeOffset || 0}px)`,
+                  }}
+                >
+                  <VehicleIcon
+                    type={routeConfig.vehicle}
+                    size={54}
+                    glowColor="#EB5E28"
+                    customImageUrl={routeConfig.customVehicleImage}
+                  />
                 </div>
-              </div>
-            )}
-
-            {/* Vehicle Icon with Dynamic Bearing Rotation */}
-            <div
-              className="origin-center will-change-transform"
-              style={{
-                transform: `rotate(${vehicleState.point.bearing}deg) translateY(-${vehicleState.point.altitudeOffset || 0}px)`,
-              }}
-            >
-              <VehicleIcon
-                type={routeConfig.vehicle}
-                trainModel={routeConfig.trainModel}
-                size={54}
-                glowColor="#EB5E28"
-              />
-            </div>
+              );
+            })()}
           </div>
         )}
 
@@ -1396,23 +1583,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
             {/* Travel Mode Badge */}
             <div className="bg-[#EB5E28]/10 backdrop-blur-md border border-[#EB5E28]/30 px-3 py-1.5 rounded-lg text-[#EB5E28] text-xs font-semibold uppercase tracking-wider">
-              {routeConfig.vehicle} • {routeConfig.travelTimeText}
+              {routeConfig.vehicle === 'custom' ? 'Custom' : routeConfig.vehicle} • {routeConfig.travelTimeText}
             </div>
           </div>
         )}
 
-        {/* Arrival Celebration Banner when arriving and zoomed out */}
-        {isArrived && calculatedRoute && (
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none z-30 transition-all duration-500 ease-out transform animate-fade-in">
-            <div className="bg-white/95 backdrop-blur-md border-2 border-[#EB5E28] px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-3">
-              <span className="text-base">🏁</span>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-black text-[#EB5E28] tracking-widest uppercase">
-                  JOURNEY COMPLETED
-                </span>
-                <span className="text-xs font-bold text-[#252422]">
-                  {routeConfig.startPoint.name} ➔ {routeConfig.endPoint.name} • {calculatedRoute.totalDistanceKm.toFixed(1)} km
-                </span>
+        {/* Arrival Celebration Banner when arriving at destination */}
+        {showDestinationPin && calculatedRoute && (
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none z-30">
+            <div className="animate-pop-in-bounce origin-bottom">
+              <div className="bg-white/95 backdrop-blur-md border-2 border-[#EB5E28] px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-3">
+                <span className="text-base">🏁</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-[#252422]">
+                    {routeConfig.startPoint.name} ➔ {routeConfig.endPoint.name}
+                  </span>
+                  <span className="text-xs font-bold text-[#736d65]">•</span>
+                  <span className="text-xs font-bold text-[#EB5E28]">
+                    {calculatedRoute.totalDistanceKm.toFixed(1)} km
+                  </span>
+                  {routeConfig.travelTimeText && (
+                    <>
+                      <span className="text-xs font-bold text-[#736d65]">•</span>
+                      <span className="text-xs font-bold text-[#EB5E28]">
+                        {routeConfig.travelTimeText}
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </div>
