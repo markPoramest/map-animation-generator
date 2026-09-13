@@ -141,20 +141,31 @@ function coordKey(c: [number, number]): string {
  */
 async function queryOverpassWithFailover(query: string, timeoutMs = 8000): Promise<any | null> {
   const mirrors = [
-    'https://overpass.kumi.systems/api/interpreter',
     'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
     'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   ];
 
+  const postBody = `data=${encodeURIComponent(query)}`;
+  const isServer = typeof window === 'undefined';
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (isServer) {
+    headers['User-Agent'] = 'MapAnimationGenerator/1.0 (contact@mapanimator.local)';
+  }
+
   for (const mirror of mirrors) {
     try {
-      const url = `${mirror}?data=${encodeURIComponent(query)}`;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      const res = await fetch(url, {
+      const res = await fetch(mirror, {
+        method: 'POST',
         signal: controller.signal,
-        headers: { 'User-Agent': 'MapAnimationGenerator/1.0' },
+        headers,
+        body: postBody,
       });
       clearTimeout(timer);
 
@@ -389,8 +400,8 @@ export function generateRailwayFallbackPath(
 
 /**
  * Master Railway Route Resolver:
- * Dispatches between Option B (Static GeoJSON Lookup), Option A (Overpass API),
- * and Fallback Mechanism (Railway spline).
+ * Dispatches between Option B (Static GeoJSON Lookup), Option A (Server / Overpass API),
+ * and Ground Corridor Fallback (real terrain/road paths, never an airplane flight arc).
  */
 export async function getRailwayRoute(
   startPoint: GeoPoint,
@@ -406,7 +417,27 @@ export async function getRailwayRoute(
     }
   }
 
-  // 2. Option A: Dynamic Overpass API Railway Routing
+  // 2. Call Next.js Server API Route /api/railway (Server-to-Server Overpass with valid User-Agent, zero CORS)
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch('/api/railway', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startPoint, endPoint, waypoints, vehicle }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.coordinates) && data.coordinates.length >= 2) {
+          return data.coordinates;
+        }
+      }
+    } catch (apiErr) {
+      console.warn('Call to /api/railway failed, falling back to direct client resolver:', apiErr);
+    }
+  }
+
+  // 3. Option A: Dynamic Overpass API Railway Routing (direct fetch)
   if (waypoints.length === 0) {
     try {
       const dynamicRoute = await fetchOverpassRailwayRoute(startPoint, endPoint);
@@ -414,10 +445,29 @@ export async function getRailwayRoute(
         return dynamicRoute;
       }
     } catch (err) {
-      console.warn('Overpass railway fetch failed, proceeding to railway fallback:', err);
+      console.warn('Overpass railway fetch failed, proceeding to ground corridor fallback:', err);
     }
   }
 
-  // 3. Fallback: Railway corridor snapping & gentle railway easement (never car roads)
+  // 4. Ground Corridor Fallback: Query OSRM ground path (stays on ground passes/valleys, never an airplane flight arc)
+  try {
+    const allPoints = [startPoint, ...waypoints, endPoint];
+    const coordStr = allPoints.map((p) => `${p.lng},${p.lat}`).join(';');
+    const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.routes && data.routes.length > 0) {
+        const coords = data.routes[0].geometry.coordinates as [number, number][];
+        if (coords.length >= 2) {
+          return coords;
+        }
+      }
+    }
+  } catch (groundErr) {
+    console.warn('Ground corridor fallback fetch failed:', groundErr);
+  }
+
+  // 5. Ultimate Fallback: Railway corridor gentle easement
   return generateRailwayFallbackPath(startPoint, endPoint, waypoints, vehicle);
 }
