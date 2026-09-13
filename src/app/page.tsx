@@ -39,6 +39,7 @@ export default function Home() {
     },
     waypoints: [],
     vehicle: 'train',
+    modeCategory: 'train',
     travelTimeText: '40 min',
     distanceText: '32 km',
     durationSeconds: 8,

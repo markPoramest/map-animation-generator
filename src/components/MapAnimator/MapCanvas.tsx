@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import * as turf from '@turf/turf';
-import { RouteConfig, MapTheme, AspectRatio } from '@/types/route';
+import { RouteConfig, MapTheme, AspectRatio, ModeCategory, getEffectiveModeCategory } from '@/types/route';
 import { CalculatedRoute, RouteSamplePoint } from '@/services/routing';
 import { VehicleIcon, getVehicleSvgDataUri } from './VehicleIcons';
+import { CategoryGlyph, getCategoryGlyphDataUri } from './CategoryGlyphs';
 
 export interface MapCanvasHandle {
   renderFrameAtProgress: (progress: number) => Promise<void>;
@@ -176,9 +177,9 @@ export function getMapStyle(routeConfig: RouteConfig): any {
  * 3. [pOverview .. 1.0]: Complete route trail showcase holding for ~3 seconds before video end
  */
 export function getTimelinePhases(durationSec: number) {
-  const HOLD_SEC = 3.0; // Continue showing complete route trail for ~3 seconds before video end
-  const ZOOM_SEC = Math.min(1.5, Math.max(1.0, durationSec * 0.12));
-  const travelSec = Math.max(2.5, durationSec - HOLD_SEC - ZOOM_SEC);
+  const HOLD_SEC = Math.min(2.0, Math.max(1.0, durationSec * 0.15));
+  const ZOOM_SEC = Math.min(1.0, Math.max(0.4, durationSec * 0.06));
+  const travelSec = Math.max(2.0, durationSec - HOLD_SEC - ZOOM_SEC);
   const totalSec = travelSec + ZOOM_SEC + HOLD_SEC;
 
   const pArrive = travelSec / totalSec;
@@ -422,6 +423,15 @@ function drawPinOnCanvas(
   ctx.fill();
   ctx.stroke();
 
+  // Small bottom pointer arrow
+  ctx.fillStyle = accentColor;
+  ctx.beginPath();
+  ctx.moveTo(x - 5 * scale, pillY + pillH);
+  ctx.lineTo(x + 5 * scale, pillY + pillH);
+  ctx.lineTo(x, pillY + pillH + 6 * scale);
+  ctx.closePath();
+  ctx.fill();
+
   // Reset shadow
   ctx.shadowColor = 'transparent';
 
@@ -479,58 +489,109 @@ function drawTitleOverlayOnCanvas(
   ctx.restore();
 }
 
-function drawArrivalCardOnCanvas(
+function drawRouteSummaryBadgeOnCanvas(
   ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
   routeConfig: RouteConfig,
   totalDistanceKm: number,
-  scaleX: number,
-  scaleY: number
+  scale: number,
+  popScale: number = 1,
+  categoryImage?: HTMLImageElement | null
 ) {
   ctx.save();
-  const cardW = 440 * scaleX;
-  const cardH = 50 * scaleY;
-  const cardX = (ctx.canvas.width - cardW) / 2;
-  const cardY = ctx.canvas.height - cardH - 34 * scaleY;
+  if (popScale !== 1) {
+    ctx.translate(x, y);
+    ctx.scale(popScale, popScale);
+    ctx.translate(-x, -y);
+  }
 
-  // Shadow
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-  ctx.shadowBlur = 14 * scaleX;
-  ctx.shadowOffsetY = 4 * scaleY;
+  const durationText = routeConfig.travelTimeText || '40 min';
+  const distanceText = `${totalDistanceKm.toFixed(1)} km`;
+
+  ctx.font = `bold ${Math.round(13 * scale)}px sans-serif`;
+  const durWidth = ctx.measureText(durationText).width;
+  ctx.font = `600 ${Math.round(11 * scale)}px sans-serif`;
+  const distWidth = ctx.measureText(distanceText).width;
+
+  const textWidth = Math.max(durWidth, distWidth);
+  const iconSize = 28 * scale;
+  const padX = 12 * scale;
+  const badgeW = iconSize + textWidth + padX * 2 + 10 * scale;
+  const badgeH = 46 * scale;
+  const pointerH = 7 * scale;
+
+  const badgeX = x - badgeW / 2;
+  const badgeY = y - badgeH - pointerH - 4 * scale;
+
+  // Drop Shadow
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+  ctx.shadowBlur = 12 * scale;
+  ctx.shadowOffsetY = 4 * scale;
 
   // Background card pill
   ctx.fillStyle = 'rgba(255, 252, 242, 0.96)';
-  ctx.strokeStyle = '#EB5E28';
-  ctx.lineWidth = 2 * scaleX;
+  ctx.strokeStyle = '#dcd4c6';
+  ctx.lineWidth = 1.2 * scale;
   ctx.beginPath();
-  ctx.roundRect(cardX, cardY, cardW, cardH, 14 * scaleX);
+  ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 14 * scale);
   ctx.fill();
+  ctx.stroke();
+
+  // Downward Triangle Pointer underneath
+  ctx.fillStyle = 'rgba(255, 252, 242, 0.96)';
+  ctx.beginPath();
+  ctx.moveTo(x - 6 * scale, badgeY + badgeH);
+  ctx.lineTo(x + 6 * scale, badgeY + badgeH);
+  ctx.lineTo(x, badgeY + badgeH + pointerH);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#dcd4c6';
   ctx.stroke();
 
   ctx.shadowColor = 'transparent';
 
-  // Tag / Icon Pill
-  const tagW = 32 * scaleX;
-  const tagH = 26 * scaleY;
-  const tagX = cardX + 12 * scaleX;
-  const tagY = cardY + (cardH - tagH) / 2;
-  ctx.fillStyle = '#EB5E28';
+  // Icon square / pill
+  const iconBoxX = badgeX + padX;
+  const iconBoxY = badgeY + (badgeH - iconSize) / 2;
+  ctx.fillStyle = 'rgba(235, 94, 40, 0.1)';
+  ctx.strokeStyle = 'rgba(235, 94, 40, 0.3)';
+  ctx.lineWidth = 1 * scale;
   ctx.beginPath();
-  ctx.roundRect(tagX, tagY, tagW, tagH, 8 * scaleX);
+  ctx.roundRect(iconBoxX, iconBoxY, iconSize, iconSize, 8 * scale);
   ctx.fill();
+  ctx.stroke();
 
-  ctx.font = `${Math.round(13 * scaleX)}px sans-serif`;
-  ctx.fillStyle = '#ffffff';
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
-  ctx.fillText('🏁', tagX + tagW / 2, tagY + tagH / 2);
+  // Draw category icon if preloaded
+  if (categoryImage && categoryImage.complete && categoryImage.naturalWidth > 0) {
+    const glyphPad = 5 * scale;
+    ctx.drawImage(
+      categoryImage,
+      iconBoxX + glyphPad,
+      iconBoxY + glyphPad,
+      iconSize - glyphPad * 2,
+      iconSize - glyphPad * 2
+    );
+  } else {
+    ctx.font = `${Math.round(14 * scale)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#EB5E28';
+    ctx.fillText('📍', iconBoxX + iconSize / 2, iconBoxY + iconSize / 2);
+  }
 
-  // Text details: start ➔ end • distance • time
+  // Duration text (top, bold dark primary)
+  const textLeft = iconBoxX + iconSize + 8 * scale;
   ctx.textAlign = 'left';
-  ctx.font = `bold ${Math.round(12.5 * scaleX)}px sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.font = `bold ${Math.round(13 * scale)}px sans-serif`;
   ctx.fillStyle = '#252422';
-  const timeText = routeConfig.travelTimeText ? ` • ${routeConfig.travelTimeText}` : '';
-  const text = `${routeConfig.startPoint.name} ➔ ${routeConfig.endPoint.name} • ${totalDistanceKm.toFixed(1)} km${timeText}`;
-  ctx.fillText(text, tagX + tagW + 10 * scaleX, cardY + cardH / 2);
+  ctx.fillText(durationText, textLeft, badgeY + 16 * scale);
+
+  // Distance text (bottom, muted slate gray)
+  ctx.font = `600 ${Math.round(11 * scale)}px sans-serif`;
+  ctx.fillStyle = '#736d65';
+  ctx.fillText(distanceText, textLeft, badgeY + 32 * scale);
 
   ctx.restore();
 }
@@ -634,11 +695,38 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     point: RouteSamplePoint | null;
     screenPos: { x: number; y: number } | null;
     visible: boolean;
-  }>({ point: null, screenPos: null, visible: false });
+  }>({ point: null, screenPos: null, visible: true });
 
   const [startPinScreenPos, setStartPinScreenPos] = useState<{ x: number; y: number } | null>(null);
   const [endPinScreenPos, setEndPinScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const [midpointScreenPos, setMidpointScreenPos] = useState<{ x: number; y: number } | null>(null);
   const [isDestinationRevealed, setIsDestinationRevealed] = useState<boolean>(false);
+  const [isArrivedState, setIsArrivedState] = useState<boolean>(false);
+  const categoryImageRef = useRef<HTMLImageElement | null>(null);
+
+  // Calculate route midpoint coordinate using Turf.js
+  const midpointCoord = useMemo(() => {
+    if (!calculatedRoute || !calculatedRoute.coordinates || calculatedRoute.coordinates.length < 2) {
+      return null;
+    }
+    try {
+      const line = turf.lineString(calculatedRoute.coordinates);
+      const totalDist = turf.length(line, { units: 'kilometers' });
+      const mid = turf.along(line, totalDist / 2, { units: 'kilometers' });
+      return mid.geometry.coordinates as [number, number];
+    } catch {
+      return null;
+    }
+  }, [calculatedRoute]);
+
+  // Preload category glyph image for canvas export
+  useEffect(() => {
+    const cat = getEffectiveModeCategory(routeConfig);
+    const dataUri = getCategoryGlyphDataUri(cat, '#EB5E28');
+    const img = new Image();
+    img.src = dataUri;
+    categoryImageRef.current = img;
+  }, [routeConfig.vehicle, routeConfig.modeCategory]);
 
   useEffect(() => {
     progressRef.current = currentProgress;
@@ -775,34 +863,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         );
       }
 
-      // 2. Draw Station Pins if enabled
-      const isDestinationRevealedForExport = checkDestinationReached(
-        progress,
-        routeConfig.durationSeconds || 10,
-        calculatedRoute
-      );
-
-      if (routeConfig.showStationPins) {
-        if (routeConfig.startPoint) {
-          const p = map.project([routeConfig.startPoint.lng, routeConfig.startPoint.lat]);
-          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.startPoint.name, 'start', scaleX);
-        }
-        if (routeConfig.endPoint && isDestinationRevealedForExport) {
-          const p = map.project([routeConfig.endPoint.lng, routeConfig.endPoint.lat]);
-          const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
-          const travelFrac = progress >= pArr ? 1.0 : progress / pArr;
-          const revealT = Math.min(1.0, Math.max(0, (travelFrac - 0.98) / 0.02));
-          const popScale = Math.max(0.5, Math.min(1.15, easeOutBack(revealT)));
-          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale);
-        }
-      }
-
-      // 3. Draw Vehicle Model & Floating Travel Time Badge
+      // 2. Draw Vehicle Model
       const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 10);
       const isArrived = progress >= pArrive;
       const travelFraction = isArrived ? 1.0 : progress / pArrive;
 
-      if (calculatedRoute && calculatedRoute.coordinates.length && progress > 0.001) {
+      if (calculatedRoute && calculatedRoute.coordinates.length && progress > 0.001 && !isArrived) {
         const routeLine = turf.lineString(calculatedRoute.coordinates);
         const totalDistanceKm = turf.length(routeLine, { units: 'kilometers' });
         const easedT = easeInOutQuad(travelFraction);
@@ -851,14 +917,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         }
       }
 
+      // 3. Draw Station Pins if enabled (Drawn on top of vehicle for maximum legibility)
+      const isDestinationRevealedForExport = checkDestinationReached(
+        progress,
+        routeConfig.durationSeconds || 10,
+        calculatedRoute
+      );
+
+      if (routeConfig.showStationPins) {
+        if (routeConfig.startPoint) {
+          const p = map.project([routeConfig.startPoint.lng, routeConfig.startPoint.lat]);
+          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.startPoint.name, 'start', scaleX);
+        }
+        if (routeConfig.endPoint && isDestinationRevealedForExport) {
+          const p = map.project([routeConfig.endPoint.lng, routeConfig.endPoint.lat]);
+          const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
+          const travelFrac = progress >= pArr ? 1.0 : progress / pArr;
+          const revealT = Math.min(1.0, Math.max(0, (travelFrac - 0.98) / 0.02));
+          const popScale = Math.max(0.5, Math.min(1.15, easeOutBack(revealT)));
+          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale);
+        }
+      }
+
       // 4. Draw Header Card if enabled
       if (routeConfig.showTitleOverlay) {
         drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY);
       }
 
-      // 5. Draw Arrival celebration card when arriving at destination and during complete route showcase
-      if (isDestinationRevealedForExport && calculatedRoute) {
-        drawArrivalCardOnCanvas(ctx, routeConfig, calculatedRoute.totalDistanceKm, scaleX, scaleY);
+      // 5. Draw Google Maps-Style Route Summary Badge at Route Midpoint upon arrival
+      if (isArrived && midpointCoord && calculatedRoute) {
+        const mp = map.project(midpointCoord);
+        const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
+        const revealT = Math.min(1.0, Math.max(0, (progress - pArr) / 0.03));
+        const popScale = Math.max(0.5, Math.min(1.05, easeOutBack(revealT)));
+        drawRouteSummaryBadgeOnCanvas(
+          ctx,
+          mp.x * scaleX,
+          mp.y * scaleY,
+          routeConfig,
+          calculatedRoute.totalDistanceKm,
+          scaleX,
+          popScale,
+          categoryImageRef.current
+        );
       }
 
       // 6. Draw Subtle Map Attribution Credit in bottom-right corner for YouTube compliance
@@ -950,9 +1051,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         const isStaticOverview = routeConfig.cameraMode === 'static-overview';
 
         if (isStaticOverview) {
-          // Mode A: Static Overview — lock camera with padding 100 and pitch 20
+          // Mode A: Static Overview — lock camera with bottom clearance (160px) and pitch 20
           map.fitBounds(calculatedRoute.bounds, {
-            padding: 100,
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
             duration: 0,
             pitch: 20,
             bearing: 0,
@@ -967,8 +1068,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           map.once('idle', onInitIdle);
           initTimer = setTimeout(onInitIdle, 800);
         } else {
-          // Mode B: Dynamic Follow — pre-cache overview tiles, then jump to start with scale-aware zoom
-          map.fitBounds(calculatedRoute.bounds, { padding: 80, duration: 0, pitch: 0, bearing: 0 });
+          // Mode B: Dynamic Follow — pre-cache overview tiles with bottom clearance (160px)
+          map.fitBounds(calculatedRoute.bounds, {
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
+            duration: 0,
+            pitch: 0,
+            bearing: 0,
+          });
           const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
           const onInitIdle = () => {
             map.off('idle', onInitIdle);
@@ -1135,9 +1241,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
       if (calculatedRoute && calculatedRoute.bounds) {
         if (isStaticOverview) {
-          // Mode A: Static Overview
+          // Mode A: Static Overview with generous bottom clearance (160px)
           map.fitBounds(calculatedRoute.bounds, {
-            padding: 100,
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
             duration: 0,
             pitch: 20,
             bearing: 0,
@@ -1152,9 +1258,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           map.once('idle', onRouteIdle);
           routeTimer = setTimeout(onRouteIdle, 800);
         } else {
-          // Mode B: Dynamic Follow
+          // Mode B: Dynamic Follow with bottom clearance (160px)
           const { zoom, pitch } = getDynamicFollowZoomPitch(calculatedRoute.totalDistanceKm);
-          map.fitBounds(calculatedRoute.bounds, { padding: 80, duration: 0, pitch: 0, bearing: 0 });
+          map.fitBounds(calculatedRoute.bounds, {
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
+            duration: 0,
+            pitch: 0,
+            bearing: 0,
+          });
           const onRouteIdle = () => {
             map.off('idle', onRouteIdle);
             map.jumpTo({
@@ -1190,11 +1301,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       setEndPinScreenPos({ x: p.x, y: p.y });
     }
 
+    if (midpointCoord) {
+      const mp = map.project(midpointCoord);
+      setMidpointScreenPos({ x: mp.x, y: mp.y });
+    }
+
     if (vehicleState.point) {
       const vp = map.project([vehicleState.point.lng, vehicleState.point.lat]);
       setVehicleState((prev) => ({ ...prev, screenPos: { x: vp.x, y: vp.y } }));
     }
-  }, [calculatedRoute, routeConfig.startPoint, routeConfig.endPoint, vehicleState.point]);
+  }, [calculatedRoute, routeConfig.startPoint, routeConfig.endPoint, vehicleState.point, midpointCoord]);
 
   const updateProgressVisuals = useCallback(
     (progress: number) => {
@@ -1205,6 +1321,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const { pArrive } = getTimelinePhases(duration);
       const isArrived = progress >= pArrive;
       const travelFraction = isArrived ? 1.0 : progress / pArrive;
+      setIsArrivedState(isArrived);
 
       // Update destination reveal state in render loop
       const destReached = checkDestinationReached(progress, duration, calculatedRoute);
@@ -1304,7 +1421,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           progress: travelFraction,
         },
         screenPos: { x: screenPos.x, y: screenPos.y },
-        visible: progress > 0.0001,
+        visible: true,
       });
 
       // Synchronize station pin screen positions
@@ -1316,10 +1433,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         const ep = map.project([routeConfig.endPoint.lng, routeConfig.endPoint.lat]);
         setEndPinScreenPos({ x: ep.x, y: ep.y });
       }
+      if (midpointCoord) {
+        const mp = map.project(midpointCoord);
+        setMidpointScreenPos({ x: mp.x, y: mp.y });
+      }
 
       // Confetti removed per design requirement
     },
-    [calculatedRoute, routeConfig, updateScreenOverlays]
+    [calculatedRoute, routeConfig, updateScreenOverlays, midpointCoord]
   );
 
   const onProgressChangeRef = useRef(onProgressChange);
@@ -1349,6 +1470,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     if (progressRef.current >= 0.999 || currentProgress >= 0.999) {
       progressRef.current = 0;
       setIsDestinationRevealed(false);
+      setIsArrivedState(false);
       onProgressChangeRef.current(0);
       updateProgressVisualsRef.current(0);
     } else {
@@ -1358,6 +1480,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
     lastTimeRef.current = null;
 
     const animate = (timestamp: number) => {
+      if (!calculatedRoute || !isMapLoadedRef.current) {
+        lastTimeRef.current = timestamp;
+        animationFrameRef.current = requestAnimationFrame(animate);
+        return;
+      }
+
       if (!lastTimeRef.current) {
         lastTimeRef.current = timestamp;
         animationFrameRef.current = requestAnimationFrame(animate);
@@ -1391,7 +1519,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
       lastTimeRef.current = null;
     };
-  }, [isPlaying]);
+  }, [isPlaying, calculatedRoute]);
 
   // Imperative handle for video exporter and controls
   useImperativeHandle(ref, () => ({
@@ -1444,6 +1572,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       setIsDestinationRevealed(
         checkDestinationReached(progress, routeConfig.durationSeconds || 8, calculatedRoute)
       );
+      const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 8);
+      setIsArrivedState(progress >= pArrive);
       updateProgressVisuals(progress);
     },
     resetCamera: () => {
@@ -1451,7 +1581,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         smoothedBearingRef.current = null;
         if (routeConfig.cameraMode === 'static-overview') {
           mapInstanceRef.current.fitBounds(calculatedRoute.bounds, {
-            padding: 100,
+            padding: { top: 80, bottom: 160, left: 80, right: 80 },
             duration: 800,
             pitch: 20,
             bearing: 0,
@@ -1488,7 +1618,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         {/* Outstanding Start Station Pin */}
         {routeConfig.showStationPins && startPinScreenPos && (
           <div
-            className="absolute -translate-x-1/2 -translate-y-full will-change-transform flex flex-col items-center z-10"
+            className="absolute -translate-x-1/2 -translate-y-full will-change-transform flex flex-col items-center z-20 pointer-events-none"
             style={{ left: `${startPinScreenPos.x}px`, top: `${startPinScreenPos.y}px` }}
           >
             {/* Prominent Card Pill */}
@@ -1510,62 +1640,120 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           </div>
         )}
 
-        {/* Outstanding Destination Station Pin - Hidden until destination arrival with smooth pop-in bounce */}
+        {/* Outstanding Destination Station Pin - Ground Beacon (z-20) */}
         {routeConfig.showStationPins && endPinScreenPos && showDestinationPin && (
           <div
-            className="absolute -translate-x-1/2 -translate-y-full will-change-transform z-10 pointer-events-none"
+            className="absolute -translate-x-1/2 -translate-y-1/2 will-change-transform z-20 pointer-events-none"
             style={{ left: `${endPinScreenPos.x}px`, top: `${endPinScreenPos.y}px` }}
           >
-            <div className="flex flex-col items-center animate-pop-in-bounce origin-bottom">
-              {/* Prominent Card Pill with Arrival Highlight */}
-              <div className="bg-white/95 text-[#252422] rounded-xl shadow-2xl border border-[#EB5E28] ring-4 ring-[#EB5E28]/25 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 mb-1.5 select-none scale-105">
-                <span className="px-1.5 py-0.5 rounded bg-[#EB5E28] text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
-                  ARRIVED
-                </span>
-                <span className="text-xs font-bold text-[#252422] tracking-tight">
-                  {routeConfig.endPoint.name}
-                </span>
-              </div>
-              {/* Pulsing Beacon & Pin Stalk */}
-              <div className="relative flex items-center justify-center">
-                <span className="absolute -inset-2.5 rounded-full bg-[#EB5E28]/35 animate-ping pointer-events-none" />
-                <div className="w-5 h-5 rounded-full bg-[#EB5E28] border-2 border-white shadow-lg flex items-center justify-center">
-                  <div className="w-1.5 h-1.5 rounded-full bg-white" />
-                </div>
+            <div className="relative flex items-center justify-center animate-pop-in-bounce origin-center">
+              <span className="absolute -inset-2.5 rounded-full bg-[#EB5E28]/35 animate-ping pointer-events-none" />
+              <div className="w-5 h-5 rounded-full bg-[#EB5E28] border-2 border-white shadow-lg flex items-center justify-center">
+                <div className="w-1.5 h-1.5 rounded-full bg-white" />
               </div>
             </div>
           </div>
         )}
 
-        {/* Moving Vehicle & Floating Distance Badge */}
+        {/* Destination Station "ARRIVED" Badge Floating Above (z-30, anchor: translate(-50%, -120%)) */}
+        {routeConfig.showStationPins && endPinScreenPos && showDestinationPin && (
+          <div
+            className="absolute will-change-transform z-30 pointer-events-none"
+            style={{
+              left: `${endPinScreenPos.x}px`,
+              top: `${endPinScreenPos.y}px`,
+              transform: 'translate(-50%, -120%)',
+            }}
+          >
+            <div className="flex flex-col items-center animate-pop-in-bounce origin-bottom">
+              {/* Prominent Card Pill with Arrival Highlight */}
+              <div className="bg-white/95 text-[#252422] rounded-xl shadow-2xl border border-[#EB5E28] ring-4 ring-[#EB5E28]/25 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 select-none scale-105">
+                <span className="px-1.5 py-0.5 rounded bg-[#EB5E28] text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
+                  ARRIVED
+                </span>
+                <span className="text-xs font-bold text-[#252422] tracking-tight whitespace-nowrap">
+                  {routeConfig.endPoint.name}
+                </span>
+              </div>
+              {/* Small bottom pointer arrow */}
+              <div className="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] border-t-[#EB5E28]" />
+            </div>
+          </div>
+        )}
+
+        {/* Moving Vehicle Model (z-10) */}
         {vehicleState.visible && vehicleState.screenPos && vehicleState.point && (
           <div
-            className="absolute -translate-x-1/2 -translate-y-1/2 will-change-transform"
+            className="absolute -translate-x-1/2 -translate-y-1/2 will-change-transform z-10 pointer-events-none"
             style={{
               left: `${vehicleState.screenPos.x}px`,
               top: `${vehicleState.screenPos.y}px`,
             }}
           >
-            {/* Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt) */}
-            {(() => {
-              const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(vehicleState.point.bearing);
-              return (
-                <div
-                  className="will-change-transform"
-                  style={{
-                    transformOrigin: '50% 50%',
-                    transform: `scaleX(${vehFlipX}) rotate(${tiltDeg}deg) translateY(-${vehicleState.point.altitudeOffset || 0}px)`,
-                  }}
-                >
-                  <VehicleIcon
-                    type={routeConfig.vehicle}
-                    size={54}
-                    glowColor="#EB5E28"
-                    customImageUrl={routeConfig.customVehicleImage}
+            {/* Arrival fade-out container (transitions opacity, never position) */}
+            <div
+              className={`transition-opacity duration-300 ease-out ${
+                isArrivedState ? 'opacity-0 scale-90 pointer-events-none' : 'opacity-100 scale-100'
+              }`}
+            >
+              {/* Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt) */}
+              {(() => {
+                const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(vehicleState.point.bearing);
+                return (
+                  <div
+                    className="will-change-transform"
+                    style={{
+                      transformOrigin: '50% 50%',
+                      transform: `scaleX(${vehFlipX}) rotate(${tiltDeg}deg) translateY(-${vehicleState.point.altitudeOffset || 0}px)`,
+                    }}
+                  >
+                    <VehicleIcon
+                      type={routeConfig.vehicle}
+                      size={54}
+                      glowColor="#EB5E28"
+                      customImageUrl={routeConfig.customVehicleImage}
+                    />
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Google Maps-Style Route Summary Badge at Route Midpoint (z-30) */}
+        {isArrivedState && midpointScreenPos && calculatedRoute && (
+          <div
+            className="absolute will-change-transform z-30 pointer-events-none"
+            style={{
+              left: `${midpointScreenPos.x}px`,
+              top: `${midpointScreenPos.y}px`,
+              transform: 'translate(-50%, -100%) translateY(-10px)',
+            }}
+          >
+            <div className="flex flex-col items-center animate-pop-in-bounce origin-bottom">
+              {/* Card Pill matching light theme */}
+              <div className="bg-white/95 backdrop-blur-md border border-[#dcd4c6] shadow-2xl rounded-2xl px-3.5 py-2 flex items-center gap-2.5 select-none ring-1 ring-black/5">
+                {/* Category Icon with theme accent */}
+                <div className="w-8 h-8 rounded-xl bg-[#EB5E28]/10 border border-[#EB5E28]/30 flex items-center justify-center flex-shrink-0">
+                  <CategoryGlyph
+                    category={getEffectiveModeCategory(routeConfig)}
+                    size={18}
+                    color="#EB5E28"
                   />
                 </div>
-              );
-            })()}
+                {/* Duration (top, bold dark primary) & Distance (bottom, muted slate gray) */}
+                <div className="flex flex-col text-left leading-tight">
+                  <span className="text-xs font-bold text-[#252422] tracking-tight">
+                    {routeConfig.travelTimeText || '40 min'}
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#736d65]">
+                    {calculatedRoute.totalDistanceKm.toFixed(1)} km
+                  </span>
+                </div>
+              </div>
+              {/* Light triangle pointer underneath matching container background */}
+              <div className="w-0 h-0 border-x-[6px] border-x-transparent border-t-[8px] border-t-white drop-shadow-sm -mt-[1px]" />
+            </div>
           </div>
         )}
 
@@ -1584,34 +1772,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
             {/* Travel Mode Badge */}
             <div className="bg-[#EB5E28]/10 backdrop-blur-md border border-[#EB5E28]/30 px-3 py-1.5 rounded-lg text-[#EB5E28] text-xs font-semibold uppercase tracking-wider">
               {routeConfig.vehicle === 'custom' ? 'Custom' : routeConfig.vehicle} • {routeConfig.travelTimeText}
-            </div>
-          </div>
-        )}
-
-        {/* Arrival Celebration Banner when arriving at destination */}
-        {showDestinationPin && calculatedRoute && (
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none z-30">
-            <div className="animate-pop-in-bounce origin-bottom">
-              <div className="bg-white/95 backdrop-blur-md border-2 border-[#EB5E28] px-4 py-2 rounded-2xl shadow-2xl flex items-center gap-3">
-                <span className="text-base">🏁</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-[#252422]">
-                    {routeConfig.startPoint.name} ➔ {routeConfig.endPoint.name}
-                  </span>
-                  <span className="text-xs font-bold text-[#736d65]">•</span>
-                  <span className="text-xs font-bold text-[#EB5E28]">
-                    {calculatedRoute.totalDistanceKm.toFixed(1)} km
-                  </span>
-                  {routeConfig.travelTimeText && (
-                    <>
-                      <span className="text-xs font-bold text-[#736d65]">•</span>
-                      <span className="text-xs font-bold text-[#EB5E28]">
-                        {routeConfig.travelTimeText}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
             </div>
           </div>
         )}

@@ -19,8 +19,9 @@ import {
   Upload,
   X
 } from 'lucide-react';
-import { RouteConfig, VehicleType, GeoPoint, PRESET_ROUTES, PresetRoute } from '@/types/route';
+import { RouteConfig, VehicleType, GeoPoint, PRESET_ROUTES, PresetRoute, ModeCategory, getEffectiveModeCategory } from '@/types/route';
 import { searchLocations } from '@/services/geocoding';
+import { CategoryGlyph, CATEGORY_LABELS } from './CategoryGlyphs';
 
 interface RouteEditorProps {
   routeConfig: RouteConfig;
@@ -399,6 +400,41 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
             </div>
           )}
         </div>
+
+        {/* Custom Vehicle Category Mapping */}
+        {routeConfig.vehicle === 'custom' && (
+          <div className="flex flex-col gap-2 p-3 rounded-xl bg-[#f5efe4] border border-[#dcd4c6] mt-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-[#736d65] uppercase tracking-wider">
+                Transit Category
+              </span>
+              <span className="text-[10px] text-[#EB5E28] font-bold">
+                {CATEGORY_LABELS[getEffectiveModeCategory(routeConfig)]}
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {(['walk', 'bicycle', 'car', 'bus', 'train', 'shinkansen', 'flight', 'ship'] as ModeCategory[]).map((cat) => {
+                const currentCat = getEffectiveModeCategory(routeConfig);
+                const isCatSelected = currentCat === cat;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => onChange({ modeCategory: cat })}
+                    className={`flex flex-col items-center justify-center p-1.5 rounded-lg border text-[10px] font-medium transition-all ${
+                      isCatSelected
+                        ? 'bg-white border-[#EB5E28] text-[#EB5E28] shadow-sm font-bold ring-1 ring-[#EB5E28]/20'
+                        : 'bg-white/60 border-[#dcd4c6] hover:bg-white text-[#736d65] hover:text-[#252422]'
+                    }`}
+                  >
+                    <CategoryGlyph category={cat} size={15} color={isCatSelected ? '#EB5E28' : '#736d65'} />
+                    <span className="truncate mt-0.5">{CATEGORY_LABELS[cat]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Travel Time Badge Dropdown */}
