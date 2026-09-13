@@ -1,14 +1,17 @@
 'use client';
 
-import React, { useState } from 'react';
-import { X, Download, Film, Sparkles, CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Download, Film, Sparkles, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
 import { RouteConfig } from '@/types/route';
+import { CalculatedRoute } from '@/services/routing';
 import { exportRouteVideo, downloadVideoFile, ExportProgress } from '@/services/videoExporter';
 
 interface ExportModalProps {
   isOpen: boolean;
   onClose: () => void;
   routeConfig: RouteConfig;
+  calculatedRoute?: CalculatedRoute | null;
+  isLoadingRoute?: boolean;
   getCanvas: () => HTMLCanvasElement | null;
   renderFrameAtProgress: (progress: number) => Promise<void>;
 }
@@ -17,6 +20,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   routeConfig,
+  calculatedRoute,
+  isLoadingRoute = false,
   getCanvas,
   renderFrameAtProgress,
 }) => {
@@ -31,9 +36,36 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [exportedFilename, setExportedFilename] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Auto-reset exported video state whenever modal opens or when route endpoints/vehicle change
+  useEffect(() => {
+    if (isOpen) {
+      setExportedVideoUrl(null);
+      setExportedFilename(null);
+      setErrorMessage(null);
+      setIsExporting(false);
+      setProgressState({
+        progress: 0,
+        status: 'Ready to export',
+      });
+    }
+  }, [
+    isOpen,
+    routeConfig.startPoint.lat,
+    routeConfig.startPoint.lng,
+    routeConfig.endPoint.lat,
+    routeConfig.endPoint.lng,
+    routeConfig.vehicle,
+    routeConfig.durationSeconds,
+  ]);
+
   if (!isOpen) return null;
 
   const handleStartExport = async () => {
+    if (isLoadingRoute || !calculatedRoute) {
+      setErrorMessage('Route geometry is currently calculating. Please wait a moment.');
+      return;
+    }
+
     const canvas = getCanvas();
     if (!canvas) {
       setErrorMessage('Map canvas not initialized. Please try again.');
@@ -74,6 +106,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       downloadVideoFile(exportedVideoUrl, exportedFilename);
     }
   };
+
+  const handleResetExport = () => {
+    setExportedVideoUrl(null);
+    setExportedFilename(null);
+    setErrorMessage(null);
+    setIsExporting(false);
+    setProgressState({
+      progress: 0,
+      status: 'Ready to export',
+    });
+  };
+
+  const isRoutePending = isLoadingRoute || !calculatedRoute;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#FFFCF2]/90 backdrop-blur-md animate-fadeIn">
@@ -117,6 +162,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 <CheckCircle2 className="w-4 h-4" /> Video rendered successfully!
               </span>
               <span className="font-mono">{exportedFilename}</span>
+            </div>
+          </div>
+        ) : isRoutePending ? (
+          <div className="flex flex-col items-center justify-center py-10 px-4 bg-[#FFFCF2] rounded-2xl border border-[#dcd4c6] gap-3 text-center">
+            <div className="w-6 h-6 border-2 border-[#EB5E28] border-t-transparent rounded-full animate-spin" />
+            <div className="text-xs font-bold text-[#252422]">Updating Route Geometry...</div>
+            <div className="text-[11px] text-[#736d65]">
+              Calculating path for {routeConfig.startPoint.name} ➔ {routeConfig.endPoint.name}
             </div>
           </div>
         ) : (
@@ -226,23 +279,33 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
 
           {exportedVideoUrl ? (
-            <button
-              type="button"
-              onClick={handleDownload}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white text-xs font-bold shadow-md flex items-center gap-2 transition-all"
-            >
-              <Download className="w-4 h-4" />
-              <span>Download Video</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleResetExport}
+                className="px-4 py-2.5 rounded-xl bg-[#ede5d6] hover:bg-[#dcd4c6] text-[#403D39] text-xs font-semibold flex items-center gap-1.5 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Re-export</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white text-xs font-bold shadow-md flex items-center gap-2 transition-all"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Video</span>
+              </button>
+            </div>
           ) : (
             <button
               type="button"
               onClick={handleStartExport}
-              disabled={isExporting}
-              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white text-xs font-bold shadow-md flex items-center gap-2 transition-all disabled:opacity-50"
+              disabled={isExporting || isRoutePending}
+              className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white text-xs font-bold shadow-md flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Sparkles className="w-4 h-4" />
-              <span>{isExporting ? 'Exporting...' : 'Start Video Render'}</span>
+              <span>{isExporting ? 'Exporting...' : isRoutePending ? 'Calculating Route...' : 'Start Video Render'}</span>
             </button>
           )}
         </div>

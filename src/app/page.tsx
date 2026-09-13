@@ -107,12 +107,19 @@ export default function Home() {
   ]);
 
   const handleUpdateConfig = (updated: Partial<RouteConfig>) => {
-    setRouteConfig((prev) => ({ ...prev, ...updated }));
+    setRouteConfig((prev) => {
+      const next = { ...prev, ...updated };
+      if (updated.startPoint || updated.endPoint) {
+        next.title = `${next.startPoint.name} to ${next.endPoint.name} Journey`;
+      }
+      return next;
+    });
   };
 
   const handleApplyPreset = (preset: PresetRoute) => {
     setRouteConfig((prev) => ({
       ...prev,
+      title: `${preset.startPoint.name} to ${preset.endPoint.name} Journey`,
       startPoint: preset.startPoint,
       endPoint: preset.endPoint,
       vehicle: preset.vehicle,
@@ -167,10 +174,15 @@ export default function Home() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => setIsExportModalOpen(true)}
-            className="px-4 py-2 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95"
+            disabled={isLoadingRoute || !calculatedRoute}
+            className="px-4 py-2 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Video className="w-4 h-4" />
-            <span>Export Video</span>
+            {isLoadingRoute ? (
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Video className="w-4 h-4" />
+            )}
+            <span>{isLoadingRoute ? 'Calculating...' : 'Export Video'}</span>
           </button>
         </div>
       </header>
@@ -238,6 +250,7 @@ export default function Home() {
               currentProgress={currentProgress}
               durationSeconds={routeConfig.durationSeconds}
               aspectRatio={routeConfig.aspectRatio}
+              disabledExport={isLoadingRoute || !calculatedRoute}
               onPlayToggle={handlePlayToggle}
               onReset={handleReset}
               onProgressChange={handleProgressChange}
@@ -250,9 +263,12 @@ export default function Home() {
       </main>
 
       <ExportModal
+        key={`${routeConfig.startPoint.lat}_${routeConfig.startPoint.lng}_${routeConfig.endPoint.lat}_${routeConfig.endPoint.lng}_${routeConfig.vehicle}`}
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
         routeConfig={routeConfig}
+        calculatedRoute={calculatedRoute}
+        isLoadingRoute={isLoadingRoute}
         getCanvas={() => mapCanvasRef.current?.getCanvas() || null}
         renderFrameAtProgress={async (prog) => {
           if (mapCanvasRef.current) {

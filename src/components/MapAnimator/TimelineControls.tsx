@@ -15,6 +15,7 @@ interface TimelineControlsProps {
   onDurationChange: (duration: number) => void;
   onAspectRatioChange: (aspectRatio: AspectRatio) => void;
   onExportClick: () => void;
+  disabledExport?: boolean;
 }
 
 export const TimelineControls: React.FC<TimelineControlsProps> = ({
@@ -28,6 +29,7 @@ export const TimelineControls: React.FC<TimelineControlsProps> = ({
   onDurationChange,
   onAspectRatioChange,
   onExportClick,
+  disabledExport = false,
 }) => {
   const currentTime = (currentProgress * durationSeconds).toFixed(1);
   const totalTime = durationSeconds.toFixed(1);
@@ -76,10 +78,15 @@ export const TimelineControls: React.FC<TimelineControlsProps> = ({
         {/* Export Video Button */}
         <button
           onClick={onExportClick}
-          className="px-5 py-2.5 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95 whitespace-nowrap"
+          disabled={disabledExport}
+          className="px-5 py-2.5 bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white font-semibold text-xs rounded-xl shadow-md flex items-center gap-2 transition-all transform active:scale-95 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <Video className="w-4 h-4" />
-          <span>Export Video</span>
+          {disabledExport ? (
+            <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <Video className="w-4 h-4" />
+          )}
+          <span>{disabledExport ? 'Calculating...' : 'Export Video'}</span>
         </button>
       </div>
 
