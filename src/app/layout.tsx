@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Map Animation Generator - Map Route Animation Video",
   description: "Create animated 3D map route travel videos from start and destination points with customizable vehicles, train models, and travel time badges.",
+  icons: {
+    icon: "/logo.png",
+    shortcut: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
