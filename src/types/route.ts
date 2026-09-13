@@ -1,0 +1,130 @@
+export type VehicleType = 
+  | 'train' 
+  | 'shinkansen' 
+  | 'car' 
+  | 'airplane' 
+  | 'bus' 
+  | 'bicycle' 
+  | 'walk' 
+  | 'ship';
+
+export type TrainModelType = 
+  | 'azuma'
+  | 'azusa-express' 
+  | 'shinkansen-e5' 
+  | 'classic-commuter' 
+  | 'steam-locomotive' 
+  | 'modern-metro' 
+  | 'scenic-tram' 
+  | 'cute-isometric';
+
+export type CameraMode = 'fixed-3d' | 'dynamic-overview' | 'top-down-2d' | 'chase-3d' | 'cinematic-orbit';
+
+export type AspectRatio = '16:9';
+
+export type MapTheme = 'voyager' | 'dark' | 'positron' | 'satellite' | 'outdoors' | 'retro';
+
+export interface GeoPoint {
+  name: string;
+  lat: number;
+  lng: number;
+  subText?: string;
+}
+
+export interface RouteConfig {
+  id: string;
+  title: string;
+  startPoint: GeoPoint;
+  endPoint: GeoPoint;
+  waypoints: GeoPoint[];
+  vehicle: VehicleType;
+  trainModel?: TrainModelType;
+  travelTimeText: string;
+  distanceText?: string;
+  speedText?: string;
+  customNotes?: string;
+  
+  // Visual & Animation Config
+  durationSeconds: number;
+  mapTheme: MapTheme;
+  cameraMode: CameraMode;
+  aspectRatio: AspectRatio;
+  showTimeBadge: boolean;
+  showDistanceBadge: boolean;
+  showStationPins: boolean;
+  showTitleOverlay: boolean;
+  lockNorth: boolean;
+  
+  // Camera params
+  cameraPitch: number;
+  cameraBearingOffset: number;
+  cameraZoom: number;
+}
+
+export interface PresetRoute {
+  name: string;
+  description: string;
+  startPoint: GeoPoint;
+  endPoint: GeoPoint;
+  vehicle: VehicleType;
+  travelTimeText: string;
+  durationSeconds: number;
+  cameraMode: CameraMode;
+  mapTheme: MapTheme;
+}
+
+export const PRESET_ROUTES: PresetRoute[] = [
+  {
+    name: 'Matsumoto ➔ Kami-Suwa (Train)',
+    description: 'Chuo Line Limited Express in Nagano, Japan (40 min)',
+    startPoint: {
+      name: 'Matsumoto Station',
+      lat: 36.2307,
+      lng: 137.9644,
+      subText: 'Nagano, Japan'
+    },
+    endPoint: {
+      name: 'Kami-Suwa Station',
+      lat: 36.0467,
+      lng: 138.1165,
+      subText: 'Suwa, Nagano'
+    },
+    vehicle: 'train',
+    travelTimeText: '40 min',
+    durationSeconds: 8,
+    cameraMode: 'fixed-3d',
+    mapTheme: 'voyager'
+  },
+  {
+    name: 'Tokyo ➔ Kyoto (Shinkansen)',
+    description: 'Tokaido Shinkansen bullet train (2h 15m)',
+    startPoint: {
+      name: 'Tokyo Station',
+      lat: 35.6812,
+      lng: 139.7671,
+      subText: 'Tokyo, Japan'
+    },
+    endPoint: {
+      name: 'Kyoto Station',
+      lat: 34.9858,
+      lng: 135.7588,
+      subText: 'Kyoto, Japan'
+    },
+    vehicle: 'shinkansen',
+    travelTimeText: '2h 15 min',
+    durationSeconds: 10,
+    cameraMode: 'fixed-3d',
+    mapTheme: 'dark'
+  },
+];
+
+export interface VideoExportSettings {
+  format: 'mp4' | 'webm';
+  fps: 30 | 60;
+  quality: number;
+  durationSeconds: number;
+  aspectRatio: AspectRatio;
+  includeAudio: boolean;
+  audioTrack?: string;
+  watermark: boolean;
+}
