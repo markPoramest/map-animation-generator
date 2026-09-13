@@ -42,6 +42,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 19,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -62,6 +65,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 19,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -82,6 +88,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 19,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -102,6 +111,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 19,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -122,6 +134,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 17,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -142,6 +157,9 @@ const THEME_STYLES: Record<MapTheme, any> = {
         source: 'raster-tiles',
         minzoom: 0,
         maxzoom: 19,
+        paint: {
+          'raster-fade-duration': 0,
+        },
       },
     ],
   },
@@ -488,9 +506,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         compositeCanvasRef.current = document.createElement('canvas');
       }
       const canvas = compositeCanvasRef.current;
-      if (canvas.width !== mapCanvas.width || canvas.height !== mapCanvas.height) {
-        canvas.width = mapCanvas.width;
-        canvas.height = mapCanvas.height;
+      const targetW = mapCanvas.width % 2 === 0 ? mapCanvas.width : mapCanvas.width - 1;
+      const targetH = mapCanvas.height % 2 === 0 ? mapCanvas.height : mapCanvas.height - 1;
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -656,18 +676,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       updateProgressVisuals(progressRef.current);
 
       if (calculatedRoute && calculatedRoute.bounds) {
-        // Multi-tier pre-warming: pre-load corridor bounds tiles first
+        // Multi-tier pre-warming: pre-cache route corridor bounding box tiles first
         map.fitBounds(calculatedRoute.bounds, { padding: 40, duration: 0 });
-        setTimeout(() => {
-          map.jumpTo({
-            center: [startLng, startLat],
-            zoom: routeConfig.cameraZoom || 13.8,
-            pitch: routeConfig.cameraPitch || 48,
-            bearing: 0,
-          });
-          setupRouteLayers(map);
-          updateProgressVisuals(progressRef.current);
-        }, 120);
+        let jumped = false;
+        const onWarmIdle = () => {
+          if (!jumped) {
+            jumped = true;
+            map.off('idle', onWarmIdle);
+            map.jumpTo({
+              center: [startLng, startLat],
+              zoom: routeConfig.cameraZoom || 13.8,
+              pitch: routeConfig.cameraPitch || 48,
+              bearing: 0,
+            });
+            setupRouteLayers(map);
+            updateProgressVisuals(progressRef.current);
+          }
+        };
+        map.on('idle', onWarmIdle);
+        setTimeout(onWarmIdle, 1200);
       }
     });
 
@@ -828,8 +855,30 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (map && isMapLoadedRef.current) {
-      setupRouteLayers(map);
-      updateProgressVisuals(currentProgress);
+      if (calculatedRoute && calculatedRoute.bounds) {
+        // Pre-warm route corridor tiles into cache
+        map.fitBounds(calculatedRoute.bounds, { padding: 40, duration: 0 });
+        let jumped = false;
+        const onRouteIdle = () => {
+          if (!jumped) {
+            jumped = true;
+            map.off('idle', onRouteIdle);
+            map.jumpTo({
+              center: [routeConfig.startPoint.lng, routeConfig.startPoint.lat],
+              zoom: routeConfig.cameraZoom || 13.8,
+              pitch: routeConfig.cameraPitch || 48,
+              bearing: 0,
+            });
+            setupRouteLayers(map);
+            updateProgressVisuals(currentProgress);
+          }
+        };
+        map.on('idle', onRouteIdle);
+        setTimeout(onRouteIdle, 1200);
+      } else {
+        setupRouteLayers(map);
+        updateProgressVisuals(currentProgress);
+      }
     }
   }, [calculatedRoute]);
 
@@ -1198,18 +1247,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       const map = mapInstanceRef.current;
       if (!map) return;
 
-      // On initial start frame, wait until map tiles are completely loaded so no blank or black map appears
-      if (progress <= 0.001) {
-        if (!map.areTilesLoaded()) {
-          await new Promise<void>((res) => {
-            const onIdle = () => {
+      // Wait until all map tiles for current frame viewpoint are fully loaded (prevents washed-out/blank tiles)
+      if (!map.areTilesLoaded()) {
+        await new Promise<void>((res) => {
+          let resolved = false;
+          const onIdle = () => {
+            if (!resolved) {
+              resolved = true;
               map.off('idle', onIdle);
               res();
-            };
-            map.on('idle', onIdle);
-            setTimeout(onIdle, 600);
-          });
-        }
+            }
+          };
+          map.on('idle', onIdle);
+          setTimeout(onIdle, 800);
+        });
       }
 
       await new Promise<void>((resolve) => {
@@ -1224,7 +1275,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         map.once('render', finishFrame);
         map.triggerRepaint();
         // Fallback timeout guarantees export never stalls
-        setTimeout(finishFrame, 80);
+        setTimeout(finishFrame, 100);
       });
     },
     getCanvas: () => {
