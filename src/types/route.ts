@@ -18,7 +18,7 @@ export type TrainModelType =
   | 'scenic-tram' 
   | 'cute-isometric';
 
-export type CameraMode = 'fixed-3d' | 'dynamic-overview' | 'top-down-2d' | 'chase-3d' | 'cinematic-orbit';
+export type CameraMode = 'static-overview' | 'fixed-3d' | 'dynamic-overview' | 'top-down-2d' | 'chase-3d' | 'cinematic-orbit';
 
 export type AspectRatio = '16:9';
 
@@ -113,7 +113,7 @@ export const PRESET_ROUTES: PresetRoute[] = [
     vehicle: 'shinkansen',
     travelTimeText: '2h 15 min',
     durationSeconds: 10,
-    cameraMode: 'fixed-3d',
+    cameraMode: 'static-overview',
     mapTheme: 'dark'
   },
 ];

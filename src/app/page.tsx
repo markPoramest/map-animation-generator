@@ -44,7 +44,7 @@ export default function Home() {
     distanceText: '32 km',
     durationSeconds: 8,
     mapTheme: 'voyager',
-    cameraMode: 'fixed-3d',
+    cameraMode: 'static-overview',
     aspectRatio: '16:9',
     showTimeBadge: true,
     showDistanceBadge: true,
