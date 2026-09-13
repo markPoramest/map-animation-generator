@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Train, 
   Car, 
@@ -14,7 +14,10 @@ import {
   Clock, 
   Sparkles, 
   Search,
-  Check
+  Check,
+  ImagePlus,
+  Upload,
+  X
 } from 'lucide-react';
 import { RouteConfig, VehicleType, GeoPoint, PRESET_ROUTES, PresetRoute } from '@/types/route';
 import { searchLocations } from '@/services/geocoding';
@@ -48,6 +51,28 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   const [endSuggestions, setEndSuggestions] = useState<GeoPoint[]>([]);
   const [showStartDropdown, setShowStartDropdown] = useState(false);
   const [showEndDropdown, setShowEndDropdown] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const processFile = (file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        onChange({
+          vehicle: 'custom',
+          customVehicleImage: reader.result,
+        });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processFile(file);
+    }
+  };
 
   useEffect(() => {
     setStartQuery(routeConfig.startPoint.name);
@@ -250,11 +275,19 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
         </div>
       </div>
 
-      {/* Vehicle Mode Grid */}
+      {/* Vehicle Mode Grid & Custom Upload */}
       <div className="flex flex-col gap-2.5">
-        <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider">
-          <span>Travel Vehicle</span>
-        </label>
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider">
+            <span>Travel Vehicle</span>
+          </label>
+          {routeConfig.vehicle === 'custom' && (
+            <span className="text-[10px] font-bold text-[#EB5E28] bg-[#EB5E28]/10 px-2 py-0.5 rounded-md border border-[#EB5E28]/30">
+              Custom Image Active
+            </span>
+          )}
+        </div>
+
         <div className="grid grid-cols-4 gap-2">
           {VEHICLE_OPTIONS.map((opt) => {
             const isSelected = routeConfig.vehicle === opt.type;
@@ -273,6 +306,98 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
               </button>
             );
           })}
+        </div>
+
+        {/* Custom Image Upload Card / Dropzone */}
+        <div className="mt-1">
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+
+          {routeConfig.customVehicleImage ? (
+            <div
+              onClick={() => onChange({ vehicle: 'custom' })}
+              className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                routeConfig.vehicle === 'custom'
+                  ? 'bg-[#EB5E28]/10 border-[#EB5E28]/60 shadow-sm ring-1 ring-[#EB5E28]/20'
+                  : 'bg-[#f5efe4] border-[#dcd4c6] hover:bg-[#ede5d6]'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-white border border-[#dcd4c6] p-1 flex items-center justify-center flex-shrink-0 shadow-sm overflow-hidden">
+                  <img
+                    src={routeConfig.customVehicleImage}
+                    alt="Custom vehicle"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-bold text-[#252422] truncate">Custom Vehicle</span>
+                    {routeConfig.vehicle === 'custom' && (
+                      <Check className="w-3.5 h-3.5 text-[#EB5E28]" />
+                    )}
+                  </div>
+                  <span className="text-[10px] text-[#736d65]">
+                    {routeConfig.vehicle === 'custom' ? 'Currently traveling with your image' : 'Click to select custom image'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-2.5 py-1.5 rounded-lg bg-white border border-[#dcd4c6] hover:bg-[#ede5d6] text-[11px] font-semibold text-[#403D39] transition-all"
+                >
+                  Change
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange({
+                      vehicle: 'train',
+                      customVehicleImage: undefined,
+                    });
+                    if (fileInputRef.current) fileInputRef.current.value = '';
+                  }}
+                  className="p-1.5 rounded-lg bg-white border border-[#dcd4c6] hover:bg-red-50 text-[#736d65] hover:text-red-600 transition-all"
+                  title="Remove custom image"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files?.[0];
+                if (file && file.type.startsWith('image/')) {
+                  processFile(file);
+                }
+              }}
+              className="p-3 rounded-xl border border-dashed border-[#dcd4c6] hover:border-[#EB5E28]/60 bg-[#f5efe4]/70 hover:bg-[#f5efe4] transition-all cursor-pointer flex items-center justify-center gap-2.5 group"
+            >
+              <div className="w-8 h-8 rounded-lg bg-white border border-[#dcd4c6] flex items-center justify-center group-hover:border-[#EB5E28]/40 transition-colors flex-shrink-0">
+                <ImagePlus className="w-4 h-4 text-[#EB5E28]" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-[#252422] group-hover:text-[#EB5E28] transition-colors">
+                  Upload Custom Vehicle Image
+                </span>
+                <span className="text-[10px] text-[#736d65]">
+                  Click or drag image (PNG, JPG, SVG, WebP)
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

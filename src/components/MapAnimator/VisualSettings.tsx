@@ -98,29 +98,6 @@ export const VisualSettings: React.FC<VisualSettingsProps> = ({
           </button>
         </div>
       </div>
-
-      {/* Camera Orientation Setting */}
-      <div className="flex flex-col gap-2.5">
-        <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5">
-          <Layers className="w-3.5 h-3.5 text-[#EB5E28]" />
-          <span>Orientation</span>
-        </label>
-        <div className="flex items-center justify-between p-3 bg-[#f5efe4] rounded-xl border border-[#dcd4c6]">
-          <div className="flex flex-col">
-            <span className="text-xs font-semibold text-[#252422] flex items-center gap-1.5">
-              <span>🧭 Lock North to Top</span>
-              <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-500/30 font-medium">Default</span>
-            </span>
-            <span className="text-[11px] text-[#736d65]">Keeps map orientation fixed North-Up (Eliminates shaking)</span>
-          </div>
-          <input
-            type="checkbox"
-            checked={routeConfig.lockNorth ?? true}
-            onChange={(e) => onChange({ lockNorth: e.target.checked })}
-            className="w-4 h-4 accent-[#EB5E28] cursor-pointer rounded"
-          />
-        </div>
-      </div>
     </div>
   );
 };

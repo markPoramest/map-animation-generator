@@ -6,17 +6,8 @@ export type VehicleType =
   | 'bus' 
   | 'bicycle' 
   | 'walk' 
-  | 'ship';
-
-export type TrainModelType = 
-  | 'azuma'
-  | 'azusa-express' 
-  | 'shinkansen-e5' 
-  | 'classic-commuter' 
-  | 'steam-locomotive' 
-  | 'modern-metro' 
-  | 'scenic-tram' 
-  | 'cute-isometric';
+  | 'ship'
+  | 'custom';
 
 export type CameraMode = 'static-overview' | 'dynamic-follow';
 
@@ -38,7 +29,6 @@ export interface RouteConfig {
   endPoint: GeoPoint;
   waypoints: GeoPoint[];
   vehicle: VehicleType;
-  trainModel?: TrainModelType;
   travelTimeText: string;
   distanceText?: string;
   speedText?: string;
@@ -54,6 +44,10 @@ export interface RouteConfig {
   showStationPins: boolean;
   showTitleOverlay: boolean;
   lockNorth: boolean;
+  trailColor?: string;
+  trailWidth?: number;
+  trailGlow?: boolean;
+  customVehicleImage?: string;
   
   // Camera params
   cameraPitch: number;
@@ -92,7 +86,7 @@ export const PRESET_ROUTES: PresetRoute[] = [
     vehicle: 'train',
     travelTimeText: '40 min',
     durationSeconds: 8,
-    cameraMode: 'dynamic-follow',
+    cameraMode: 'static-overview',
     mapTheme: 'voyager'
   },
   {
@@ -114,7 +108,7 @@ export const PRESET_ROUTES: PresetRoute[] = [
     travelTimeText: '2h 15 min',
     durationSeconds: 10,
     cameraMode: 'static-overview',
-    mapTheme: 'dark'
+    mapTheme: 'voyager'
   },
 ];
 

@@ -171,6 +171,7 @@ export async function calculateRoute(
     bicycle: 20,
     walk: 5,
     ship: 35,
+    custom: 60,
   };
   const estimatedTimeMin = Math.round((totalDistanceKm / (speedKmh[vehicle] || 60)) * 60);
 
