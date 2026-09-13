@@ -1,5 +1,6 @@
 import * as turf from '@turf/turf';
 import { GeoPoint, VehicleType } from '@/types/route';
+import { getRailwayRoute } from './railwayNetwork';
 
 export interface RouteSamplePoint {
   lat: number;
@@ -69,8 +70,8 @@ export function generateCurvedPath(points: GeoPoint[], vehicle: VehicleType): [n
  * Attempt to get road/path coordinates from OSRM
  */
 export async function fetchOSRMRoute(points: GeoPoint[], vehicle: VehicleType): Promise<[number, number][] | null> {
-  if (vehicle === 'airplane' || vehicle === 'ship') {
-    return null; // Always use curved geometric geodesics for air & sea
+  if (vehicle === 'airplane' || vehicle === 'ship' || vehicle === 'train' || vehicle === 'shinkansen') {
+    return null; // Airplane/ship use geodesics, train/shinkansen use railway network
   }
 
   const coordStr = points.map((p) => `${p.lng},${p.lat}`).join(';');
@@ -102,15 +103,23 @@ export async function calculateRoute(
 ): Promise<CalculatedRoute> {
   const allPoints = [startPoint, ...waypoints, endPoint];
   
-  // Try OSRM first for land vehicles (cars, trains, bus, bike, walk)
-  let rawCoords = await fetchOSRMRoute(allPoints, vehicle);
-  
-  if (!rawCoords || rawCoords.length < 2) {
+  let rawCoords: [number, number][] | null = null;
+
+  if (vehicle === 'train' || vehicle === 'shinkansen') {
+    // Authentic railway track extraction (Option B static corridors -> Option A Overpass -> Fallback easement)
+    rawCoords = await getRailwayRoute(startPoint, endPoint, waypoints, vehicle);
+  } else if (vehicle === 'airplane' || vehicle === 'ship') {
     rawCoords = generateCurvedPath(allPoints, vehicle);
+  } else {
+    // Road networks for car, bus, bicycle, walk via OSRM
+    rawCoords = await fetchOSRMRoute(allPoints, vehicle);
+    if (!rawCoords || rawCoords.length < 2) {
+      rawCoords = generateCurvedPath(allPoints, vehicle);
+    }
   }
 
   // Ensure valid line
-  if (rawCoords.length < 2) {
+  if (!rawCoords || rawCoords.length < 2) {
     rawCoords = [[startPoint.lng, startPoint.lat], [endPoint.lng, endPoint.lat]];
   }
 
