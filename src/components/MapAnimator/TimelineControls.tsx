@@ -39,7 +39,7 @@ export const TimelineControls: React.FC<TimelineControlsProps> = ({
         {/* Play/Pause Button */}
         <button
           onClick={onPlayToggle}
-          className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-[#252422] flex items-center justify-center shadow-lg shadow-[#EB5E28]/20 transition-all transform active:scale-95"
+          className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white flex items-center justify-center shadow-lg shadow-[#EB5E28]/25 transition-all transform active:scale-95"
           title={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
