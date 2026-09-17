@@ -5,7 +5,6 @@ import { GeoPoint, VehicleType } from '@/types/route';
 // Embedded exact OSM railway tracks for major transit corridors
 import CHUO_LINE_COORDS from './data/chuoLineTrack.json';
 import TOKAIDO_SHINKANSEN_COORDS from './data/tokaidoShinkansenTrack.json';
-import HAKODATE_SAPPORO_COORDS from './data/hakodateSapporoTrack.json';
 
 // Curated High Speed 1 + Channel Tunnel + LGV Nord (Eurostar corridor)
 const EUROSTAR_COORDS: [number, number][] = [
@@ -60,12 +59,6 @@ const STATIC_CORRIDORS: RailwayCorridor[] = [
     name: 'JR Tokaido Shinkansen (Tokyo to Shin-Osaka)',
     coordinates: TOKAIDO_SHINKANSEN_COORDS as [number, number][],
     line: turf.lineString(TOKAIDO_SHINKANSEN_COORDS as [number, number][]),
-  },
-  {
-    id: 'hakodate-sapporo',
-    name: 'JR Hokkaido Limited Express Hokuto (Hakodate to Sapporo)',
-    coordinates: HAKODATE_SAPPORO_COORDS as [number, number][],
-    line: turf.lineString(HAKODATE_SAPPORO_COORDS as [number, number][]),
   },
   {
     id: 'eurostar',
@@ -192,8 +185,9 @@ async function queryOverpass(query: string, timeoutMs = 15000): Promise<any | nu
 
 /**
  * Option A: Dynamic Overpass API Railway Routing
- * Queries OSM railway ways (`way["railway"~"rail|narrow_gauge|light_rail|subway"]`),
- * builds an in-memory railway topology graph, and runs A* search.
+ * 1. Attempts to find direct train route relations connecting origin and destination (ultra-fast & exact).
+ * 2. Falls back to mainline railway ways (filtering out yard/siding service tracks to prevent 504s).
+ * 3. Builds in-memory graph and runs fast PriorityQueue A* shortest path search.
  */
 export async function fetchOverpassRailwayRoute(
   startPoint: GeoPoint,
@@ -207,73 +201,82 @@ export async function fetchOverpassRailwayRoute(
     return overpassRouteCache.get(cacheKey)!;
   }
 
-  // Calculate approximate straight-line distance
   const straightDistKm = turf.distance(turf.point(start), turf.point(end), { units: 'kilometers' });
   const isServer = typeof window === 'undefined';
+  const maxDistKm = isServer ? 800 : 200;
 
-  // Server can handle larger payloads; client limited to 120km to avoid browser memory issues
-  const maxDistKm = isServer ? 500 : 120;
   if (straightDistKm > maxDistKm) {
     console.error(`[Railway] Route distance ${straightDistKm.toFixed(0)}km exceeds ${maxDistKm}km limit — skipping Overpass`);
     return null;
   }
 
-  // For long routes (>100km), split into smaller bbox segments to avoid Overpass 504 timeouts
-  const SEGMENT_MAX_KM = 80;
-  const numSegments = Math.max(1, Math.ceil(straightDistKm / SEGMENT_MAX_KM));
-  const allElements: any[] = [];
+  let waySegments: [number, number][][] = [];
 
-  console.log(`[Railway] Querying Overpass: ${straightDistKm.toFixed(0)}km route in ${numSegments} segment(s)`);
+  // Stage 1: Try direct train route relation query (matches through-train services like JR Hokuto, Shinkansen, TGV)
+  console.log(`[Railway] Stage 1: Querying direct train relations connecting ${startPoint.name || 'origin'} and ${endPoint.name || 'destination'}...`);
+  const relQuery = `[out:json][timeout:25];
+relation["route"~"^(train|railway)$"](around:5000, ${start[1]}, ${start[0]}) -> .start_routes;
+relation["route"~"^(train|railway)$"](around:5000, ${end[1]}, ${end[0]}) -> .end_routes;
+(.start_routes; - (.start_routes; - .end_routes;););
+out geom;`;
 
-  for (let i = 0; i < numSegments; i++) {
-    // Calculate segment start/end as fractions along the straight line
-    const t0 = i / numSegments;
-    const t1 = (i + 1) / numSegments;
-    const segStart: [number, number] = [
-      start[0] + (end[0] - start[0]) * t0,
-      start[1] + (end[1] - start[1]) * t0,
-    ];
-    const segEnd: [number, number] = [
-      start[0] + (end[0] - start[0]) * t1,
-      start[1] + (end[1] - start[1]) * t1,
-    ];
+  try {
+    const relData = await queryOverpass(relQuery, 25000);
+    if (relData && relData.elements && relData.elements.length > 0) {
+      const relations = relData.elements.filter((e: any) => e.type === 'relation' && Array.isArray(e.members));
+      console.log(`[Railway] Stage 1 found ${relations.length} matching train relation(s)`);
 
-    // Add margin around each segment bbox to capture nearby railway lines
-    const margin = 0.08; // ~8km buffer
-    const minLat = Math.min(segStart[1], segEnd[1]) - margin;
-    const maxLat = Math.max(segStart[1], segEnd[1]) + margin;
-    const minLng = Math.min(segStart[0], segEnd[0]) - margin;
-    const maxLng = Math.max(segStart[0], segEnd[0]) + margin;
+      for (const rel of relations) {
+        if (rel.tags?.name) {
+          console.log(`[Railway] Using train relation: "${rel.tags.name}"`);
+        }
+        for (const m of rel.members) {
+          if (m.type === 'way' && Array.isArray(m.geometry) && m.geometry.length >= 2) {
+            waySegments.push(m.geometry.map((g: any) => [g.lon, g.lat]));
+          }
+        }
+      }
+    }
+  } catch (relErr) {
+    console.warn('[Railway] Stage 1 relation query exception:', relErr instanceof Error ? relErr.message : relErr);
+  }
 
-    const query = `[out:json][timeout:15];
+  // Stage 2: Fallback to mainline railway corridor bounding box query (excludes sidings and freight yards)
+  if (waySegments.length === 0) {
+    console.log(`[Railway] Stage 2: Querying mainline railway tracks in bounding corridor...`);
+    const margin = Math.max(0.15, Math.min(0.5, straightDistKm * 0.003)); // 15km to 50km buffer for curves
+    const minLat = Math.min(start[1], end[1]) - margin;
+    const maxLat = Math.max(start[1], end[1]) + margin;
+    const minLng = Math.min(start[0], end[0]) - margin;
+    const maxLng = Math.max(start[0], end[0]) + margin;
+
+    const bboxQuery = `[out:json][timeout:25];
 (
-  way["railway"~"^(rail|narrow_gauge|light_rail|subway)$"](${minLat},${minLng},${maxLat},${maxLng});
+  way["railway"="rail"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
+  way["railway"="narrow_gauge"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
 );
 out geom;`;
 
-    const data = await queryOverpass(query, 20000);
-    if (data && data.elements && data.elements.length > 0) {
-      allElements.push(...data.elements);
-      console.log(`[Railway] Segment ${i + 1}/${numSegments}: ${data.elements.length} ways`);
-    } else {
-      console.warn(`[Railway] Segment ${i + 1}/${numSegments}: no data returned`);
+    try {
+      const bboxData = await queryOverpass(bboxQuery, 25000);
+      if (bboxData && Array.isArray(bboxData.elements)) {
+        for (const el of bboxData.elements) {
+          if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2) {
+            if (el.tags && (el.tags.railway === 'abandoned' || el.tags.railway === 'disused')) continue;
+            waySegments.push(el.geometry.map((g: any) => [g.lon, g.lat]));
+          }
+        }
+        console.log(`[Railway] Stage 2 retrieved ${waySegments.length} mainline way segments`);
+      }
+    } catch (bboxErr) {
+      console.error('[Railway] Stage 2 mainline query failed:', bboxErr instanceof Error ? bboxErr.message : bboxErr);
     }
   }
 
-  // Deduplicate elements by OSM way ID
-  const seenIds = new Set<number>();
-  const uniqueElements = allElements.filter((el) => {
-    if (seenIds.has(el.id)) return false;
-    seenIds.add(el.id);
-    return true;
-  });
-
-  if (uniqueElements.length === 0) {
-    console.error('[Railway] All Overpass segments returned empty — no railway data found');
+  if (waySegments.length === 0) {
+    console.error('[Railway] No railway geometry retrieved from Overpass');
     return null;
   }
-
-  console.log(`[Railway] Total unique railway ways: ${uniqueElements.length}`);
 
   // Build in-memory topology graph
   const graph = new Map<string, { to: string; dist: number; coord: [number, number] }[]>();
@@ -295,14 +298,9 @@ out geom;`;
     graph.get(k2)!.push({ to: k1, dist, coord: p1 });
   }
 
-  for (const el of uniqueElements) {
-    if (!el.geometry || el.geometry.length < 2) continue;
-    if (el.tags && (el.tags.railway === 'abandoned' || el.tags.railway === 'disused')) continue;
-
-    for (let i = 0; i < el.geometry.length - 1; i++) {
-      const p1: [number, number] = [el.geometry[i].lon, el.geometry[i].lat];
-      const p2: [number, number] = [el.geometry[i + 1].lon, el.geometry[i + 1].lat];
-      addEdge(p1, p2);
+  for (const seg of waySegments) {
+    for (let i = 0; i < seg.length - 1; i++) {
+      addEdge(seg[i], seg[i + 1]);
     }
   }
 
@@ -311,10 +309,9 @@ out geom;`;
     return null;
   }
 
-  // Gap-bridging pass: OSM railway ways often have small gaps at stations/junctions
-  // Use a spatial grid to efficiently find and connect nearby unconnected nodes (~220m)
-  const BRIDGE_THRESHOLD_SQ = 0.002 * 0.002; // ~220m squared in degrees
-  const GRID_SIZE = 0.002;
+  // Gap-bridging pass: connect dangling dead-ends (degree <= 2) across small gaps (< 250m)
+  const BRIDGE_THRESHOLD_SQ = 0.0025 * 0.0025; // ~250m
+  const GRID_SIZE = 0.003;
   const spatialGrid = new Map<string, string[]>();
 
   for (const [key, coord] of keyToCoord.entries()) {
@@ -328,8 +325,7 @@ out geom;`;
   let bridgeCount = 0;
   for (const [key, coord] of keyToCoord.entries()) {
     const degree = (graph.get(key) || []).length;
-    // Only bridge endpoints or dead-ends (degree <= 2) across gaps
-    if (degree > 2) continue;
+    if (degree > 2) continue; // Only bridge endpoints or dead-ends
 
     const gx = Math.floor(coord[0] / GRID_SIZE);
     const gy = Math.floor(coord[1] / GRID_SIZE);
@@ -367,9 +363,9 @@ out geom;`;
     }
   }
 
-  console.log(`[Railway] Graph: ${graph.size} nodes, bridge edges added: ${bridgeCount}`);
+  console.log(`[Railway] Graph: ${graph.size} nodes from ${waySegments.length} segments, bridge edges added: ${bridgeCount}`);
 
-  // Snap start and end to nearest railway nodes within 15km (~0.15 deg)
+  // Snap start and end to nearest railway nodes
   let startNodeKey: string | null = null;
   let minStartDist = Infinity;
   let endNodeKey: string | null = null;
@@ -390,53 +386,84 @@ out geom;`;
 
   const startSnapDeg = Math.sqrt(minStartDist);
   const endSnapDeg = Math.sqrt(minEndDist);
-  console.log(`[Railway] Snap distances: start=${(startSnapDeg * 111).toFixed(1)}km, end=${(endSnapDeg * 111).toFixed(1)}km`);
+  console.log(`[Railway] Snap distances: start=${(startSnapDeg * 111).toFixed(2)}km, end=${(endSnapDeg * 111).toFixed(2)}km`);
 
-  // Snap limit: 0.15 degrees (~15 km)
+  // Snap limit: ~15km
   if (!startNodeKey || !endNodeKey || startSnapDeg > 0.15 || endSnapDeg > 0.15) {
-    console.error(`[Railway] Snap failed — start or end too far from any railway node`);
+    console.error(`[Railway] Snap failed — station too far from railway network (start=${(startSnapDeg * 111).toFixed(1)}km, end=${(endSnapDeg * 111).toFixed(1)}km)`);
     return null;
   }
 
   if (startNodeKey === endNodeKey) {
-    console.error('[Railway] Start and end snapped to the same node');
+    console.error('[Railway] Start and end snapped to the exact same node');
     return null;
   }
 
-  // A* Shortest Path Search
+  // PriorityQueue A* Shortest Path Search
   const endCoord = keyToCoord.get(endNodeKey)!;
   function heuristic(nodeKey: string): number {
     const c = keyToCoord.get(nodeKey)!;
     return Math.sqrt(distanceSq(c, endCoord));
   }
 
-  const previous = new Map<string, string>();
+  class PriorityQueue {
+    heap: { node: string; priority: number }[] = [];
+    push(node: string, priority: number) {
+      this.heap.push({ node, priority });
+      this._up(this.heap.length - 1);
+    }
+    pop(): string | null {
+      if (this.heap.length === 0) return null;
+      const top = this.heap[0];
+      const bottom = this.heap.pop()!;
+      if (this.heap.length > 0) {
+        this.heap[0] = bottom;
+        this._down(0);
+      }
+      return top.node;
+    }
+    _up(i: number) {
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (this.heap[i].priority < this.heap[p].priority) {
+          [this.heap[i], this.heap[p]] = [this.heap[p], this.heap[i]];
+          i = p;
+        } else break;
+      }
+    }
+    _down(i: number) {
+      const len = this.heap.length;
+      while ((i << 1) + 1 < len) {
+        let left = (i << 1) + 1;
+        let right = left + 1;
+        let best = left;
+        if (right < len && this.heap[right].priority < this.heap[left].priority) best = right;
+        if (this.heap[best].priority < this.heap[i].priority) {
+          [this.heap[i], this.heap[best]] = [this.heap[best], this.heap[i]];
+          i = best;
+        } else break;
+      }
+    }
+    get size() { return this.heap.length; }
+  }
+
+  const pq = new PriorityQueue();
   const gScore = new Map<string, number>();
-  const fScore = new Map<string, number>();
-  const openSet = new Set<string>([startNodeKey]);
-  const closedSet = new Set<string>();
+  const previous = new Map<string, string>();
+  const visited = new Set<string>();
 
   gScore.set(startNodeKey, 0);
-  fScore.set(startNodeKey, heuristic(startNodeKey));
+  pq.push(startNodeKey, heuristic(startNodeKey));
 
   let foundPath: [number, number][] | null = null;
   let iterations = 0;
-  const MAX_ITERATIONS = 200000;
+  const MAX_ITERATIONS = 300000;
 
-  while (openSet.size > 0 && iterations < MAX_ITERATIONS) {
+  while (pq.size > 0 && iterations < MAX_ITERATIONS) {
     iterations++;
-    let current: string | null = null;
-    let lowestF = Infinity;
-
-    for (const node of openSet) {
-      const f = fScore.get(node) ?? Infinity;
-      if (f < lowestF) {
-        lowestF = f;
-        current = node;
-      }
-    }
-
-    if (!current) break;
+    const current = pq.pop();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
 
     if (current === endNodeKey) {
       const path: [number, number][] = [keyToCoord.get(current)!];
@@ -449,35 +476,35 @@ out geom;`;
       break;
     }
 
-    openSet.delete(current);
-    closedSet.add(current);
-    const neighbors = graph.get(current) || [];
     const currentG = gScore.get(current)!;
-
-    for (const neighbor of neighbors) {
-      if (closedSet.has(neighbor.to)) continue;
+    for (const neighbor of graph.get(current) || []) {
+      if (visited.has(neighbor.to)) continue;
       const tentativeG = currentG + neighbor.dist;
       if (tentativeG < (gScore.get(neighbor.to) ?? Infinity)) {
         previous.set(neighbor.to, current);
         gScore.set(neighbor.to, tentativeG);
-        fScore.set(neighbor.to, tentativeG + heuristic(neighbor.to));
-        openSet.add(neighbor.to);
+        pq.push(neighbor.to, tentativeG + heuristic(neighbor.to));
       }
     }
   }
 
-  console.log(`[Railway] A* search: ${iterations} iterations, visited ${closedSet.size} nodes, path ${foundPath ? 'FOUND (' + foundPath.length + ' points)' : 'NOT FOUND'}`);
+  console.log(`[Railway] A* search: ${iterations} iterations, visited ${visited.size} nodes, path ${foundPath ? 'FOUND (' + foundPath.length + ' raw points)' : 'NOT FOUND'}`);
 
   if (foundPath && foundPath.length >= 2) {
-    const finalRoute: [number, number][] = [start, ...foundPath, end];
+    const rawLine = turf.lineString([start, ...foundPath, end]);
+    // Simplify track to ~15m tolerance for clean visuals and smooth playback
+    const simplified = turf.simplify(rawLine, { tolerance: 0.00015, highQuality: true });
+    const finalRoute = simplified.geometry.coordinates as [number, number][];
+
+    console.log(`[Railway] ✓ Dynamic route generated: ${finalRoute.length} points, distance: ${turf.length(rawLine, { units: 'kilometers' }).toFixed(1)} km`);
     overpassRouteCache.set(cacheKey, finalRoute);
     return finalRoute;
   }
 
   if (iterations >= MAX_ITERATIONS) {
-    console.error('[Railway] A* exhausted max iterations — graph may be too large or disconnected');
+    console.error('[Railway] A* exhausted max iterations — graph may be too complex');
   } else {
-    console.error('[Railway] A* found no path — railway graph is disconnected between start and end');
+    console.error('[Railway] A* found no continuous path between stations');
   }
 
   return null;
