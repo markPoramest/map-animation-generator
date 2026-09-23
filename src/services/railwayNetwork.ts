@@ -140,8 +140,9 @@ function coordKey(c: [number, number]): string {
 
 /**
  * Queries Overpass API using the single most efficient mirror (overpass-api.de)
+ * Includes automatic retry with backoff for HTTP 429 (rate limiting).
  */
-async function queryOverpass(query: string, timeoutMs = 15000): Promise<any | null> {
+async function queryOverpass(query: string, timeoutMs = 25000, maxRetries = 2): Promise<any | null> {
   const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 
   const postBody = `data=${encodeURIComponent(query)}`;
@@ -154,33 +155,59 @@ async function queryOverpass(query: string, timeoutMs = 15000): Promise<any | nu
     headers['User-Agent'] = 'MapAnimationGenerator/1.0 (contact@mapanimator.local)';
   }
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      signal: controller.signal,
-      headers,
-      body: postBody,
-    });
-    clearTimeout(timer);
+      const res = await fetch(OVERPASS_URL, {
+        method: 'POST',
+        signal: controller.signal,
+        headers,
+        body: postBody,
+      });
+      clearTimeout(timer);
 
-    if (!res.ok) {
-      console.error(`[Railway] Overpass API returned HTTP ${res.status}: ${res.statusText}`);
+      if (res.status === 429) {
+        if (attempt < maxRetries) {
+          const waitSec = 4 + attempt * 2;
+          console.warn(`[Railway] Overpass API rate-limited (429). Waiting ${waitSec}s for slot before retry ${attempt + 1}/${maxRetries}...`);
+          await new Promise((r) => setTimeout(r, waitSec * 1000));
+          continue;
+        }
+        console.error('[Railway] Overpass API rate-limited (429) after all retries');
+        return null;
+      }
+
+      if (!res.ok) {
+        console.error(`[Railway] Overpass API returned HTTP ${res.status}: ${res.statusText}`);
+        return null;
+      }
+
+      const text = await res.text();
+      try {
+        const json = JSON.parse(text);
+        if (json && Array.isArray(json.elements)) {
+          return json;
+        }
+        console.error('[Railway] Overpass API returned unexpected response format');
+        return null;
+      } catch {
+        console.error('[Railway] Overpass API returned non-JSON response:', text.slice(0, 150));
+        return null;
+      }
+    } catch (err) {
+      if (attempt < maxRetries) {
+        console.warn(`[Railway] Overpass API attempt ${attempt + 1} failed (${err instanceof Error ? err.message : err}), retrying in 3s...`);
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      console.error('[Railway] Overpass API request failed:', err instanceof Error ? err.message : err);
       return null;
     }
-
-    const json = await res.json();
-    if (json && Array.isArray(json.elements)) {
-      return json;
-    }
-    console.error('[Railway] Overpass API returned unexpected response format:', JSON.stringify(json).slice(0, 200));
-    return null;
-  } catch (err) {
-    console.error('[Railway] Overpass API request failed:', err instanceof Error ? err.message : err);
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -439,6 +466,19 @@ function solveRailwayGraph(
   return null;
 }
 
+function getMinDistanceToSegments(segments: [number, number][][], point: [number, number]): number {
+  let minDsq = Infinity;
+  for (const seg of segments) {
+    for (const p of seg) {
+      const dx = (p[0] - point[0]) * 111 * Math.cos((point[1] * Math.PI) / 180);
+      const dy = (p[1] - point[1]) * 111;
+      const dsq = dx * dx + dy * dy;
+      if (dsq < minDsq) minDsq = dsq;
+    }
+  }
+  return Math.sqrt(minDsq);
+}
+
 export async function fetchOverpassRailwayRoute(
   startPoint: GeoPoint,
   endPoint: GeoPoint
@@ -453,29 +493,54 @@ export async function fetchOverpassRailwayRoute(
 
   const straightDistKm = turf.distance(turf.point(start), turf.point(end), { units: 'kilometers' });
   const isServer = typeof window === 'undefined';
-  const maxDistKm = isServer ? 800 : 200;
+  const maxDistKm = isServer ? 1000 : 200;
 
   if (straightDistKm > maxDistKm) {
     console.error(`[Railway] Route distance ${straightDistKm.toFixed(0)}km exceeds ${maxDistKm}km limit — skipping Overpass`);
     return null;
   }
 
-  // --- STAGE 1A: Direct through-train relations (around:5000 intersection) ---
-  console.log(`[Railway] Stage 1A: Querying direct through-train relations connecting ${startPoint.name || 'origin'} and ${endPoint.name || 'destination'}...`);
+  // --- STAGE 1A: Direct through-train relations with satellite connector ---
+  console.log(`[Railway] Stage 1A: Querying through-train relations connecting ${startPoint.name || 'origin'} and ${endPoint.name || 'destination'}...`);
   const directRelQuery = `[out:json][timeout:25];
-relation["route"~"^(train|railway)$"](around:5000, ${start[1]}, ${start[0]}) -> .start_routes;
-relation["route"~"^(train|railway)$"](around:5000, ${end[1]}, ${end[0]}) -> .end_routes;
-(.start_routes; - (.start_routes; - .end_routes;););
+relation["route"~"^(train|railway)$"](around:8000, ${start[1]}, ${start[0]}) -> .start_routes;
+relation.start_routes(around:10000, ${end[1]}, ${end[0]});
 out geom;`;
 
   try {
     const relData = await queryOverpass(directRelQuery, 25000);
     if (relData && Array.isArray(relData.elements) && relData.elements.length > 0) {
-      const directSegments = extractSegmentsFromRelations(relData.elements);
-      if (directSegments.length > 0) {
-        console.log(`[Railway] Stage 1A retrieved ${directSegments.length} segments from direct relations`);
-        const path = solveRailwayGraph(directSegments, start, end, cacheKey);
+      let segments = extractSegmentsFromRelations(relData.elements);
+      if (segments.length > 0) {
+        console.log(`[Railway] Stage 1A retrieved ${segments.length} segments from through-train relations`);
+        let path = solveRailwayGraph(segments, start, end, cacheKey);
         if (path) return path;
+
+        // If direct relations didn't connect all the way to start or end station,
+        // check which endpoint is disconnected (> 0.5km) and fetch feeder/local lines for that endpoint only
+        const startDist = getMinDistanceToSegments(segments, start);
+        const endDist = getMinDistanceToSegments(segments, end);
+
+        if (startDist > 0.5 || endDist > 0.5) {
+          console.log(`[Railway] Endpoint distance: start=${startDist.toFixed(1)}km, end=${endDist.toFixed(1)}km. Querying terminal connector...`);
+          const connectorParts: string[] = [];
+          if (startDist > 0.5 && startDist < 30) {
+            connectorParts.push(`relation["route"~"^(train|railway)$"](around:8000, ${start[1]}, ${start[0]});`);
+          }
+          if (endDist > 0.5 && endDist < 30) {
+            connectorParts.push(`relation["route"~"^(train|railway)$"](around:8000, ${end[1]}, ${end[0]});`);
+          }
+          if (connectorParts.length > 0) {
+            const connectorQuery = `[out:json][timeout:20];(\n${connectorParts.join('\n')}\n);out geom;`;
+            const connData = await queryOverpass(connectorQuery, 20000);
+            if (connData && Array.isArray(connData.elements)) {
+              const connSegments = extractSegmentsFromRelations(connData.elements);
+              segments = [...segments, ...connSegments];
+              path = solveRailwayGraph(segments, start, end, cacheKey);
+              if (path) return path;
+            }
+          }
+        }
         console.warn('[Railway] Stage 1A graph disconnected, falling forward to Stage 1B...');
       }
     }
@@ -483,12 +548,13 @@ out geom;`;
     console.warn('[Railway] Stage 1A failed:', err instanceof Error ? err.message : err);
   }
 
-  // --- STAGE 1B: Connecting train relations (around:25000 union for regional feeder + high-speed lines) ---
-  console.log(`[Railway] Stage 1B: Querying connecting train relations (regional feeder & high-speed lines)...`);
+  // --- STAGE 1B: Connecting train relations (adaptive radius: 10km for long routes to avoid megacity timeouts, 25km for regional routes) ---
+  const connRadius = straightDistKm > 200 ? 10000 : 25000;
+  console.log(`[Railway] Stage 1B: Querying connecting train relations (radius ${connRadius / 1000}km)...`);
   const connectingRelQuery = `[out:json][timeout:25];
 (
-  relation["route"~"^(train|railway)$"](around:25000, ${start[1]}, ${start[0]});
-  relation["route"~"^(train|railway)$"](around:25000, ${end[1]}, ${end[0]});
+  relation["route"~"^(train|railway)$"](around:${connRadius}, ${start[1]}, ${start[0]});
+  relation["route"~"^(train|railway)$"](around:${connRadius}, ${end[1]}, ${end[0]});
 );
 out geom;`;
 
@@ -625,7 +691,7 @@ export async function getRailwayRoute(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startPoint, endPoint, waypoints, vehicle }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(75000),
       });
       if (res.ok) {
         const data = await res.json();
