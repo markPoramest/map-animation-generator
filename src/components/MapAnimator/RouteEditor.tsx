@@ -12,21 +12,24 @@ import {
   MapPin, 
   ArrowUpDown, 
   Clock, 
-  Sparkles, 
   Search,
   Check,
   ImagePlus,
   Upload,
-  X
+  X,
+  Route,
+  Navigation
 } from 'lucide-react';
-import { RouteConfig, VehicleType, GeoPoint, PRESET_ROUTES, PresetRoute, ModeCategory, getEffectiveModeCategory } from '@/types/route';
+import { RouteConfig, VehicleType, GeoPoint, ModeCategory, getEffectiveModeCategory } from '@/types/route';
 import { searchLocations } from '@/services/geocoding';
 import { CategoryGlyph, CATEGORY_LABELS } from './CategoryGlyphs';
 
 interface RouteEditorProps {
   routeConfig: RouteConfig;
   onChange: (updated: Partial<RouteConfig>) => void;
-  onApplyPreset: (preset: PresetRoute) => void;
+  onGenerateRoute: () => void;
+  isLoadingRoute: boolean;
+  hasUncalculatedChanges: boolean;
 }
 
 const VEHICLE_OPTIONS: { type: VehicleType; label: string; icon: React.ReactNode }[] = [
@@ -40,11 +43,12 @@ const VEHICLE_OPTIONS: { type: VehicleType; label: string; icon: React.ReactNode
   { type: 'ship', label: 'Ferry', icon: <Ship className="w-4 h-4 text-cyan-600" /> },
 ];
 
-
 export const RouteEditor: React.FC<RouteEditorProps> = ({
   routeConfig,
   onChange,
-  onApplyPreset,
+  onGenerateRoute,
+  isLoadingRoute,
+  hasUncalculatedChanges,
 }) => {
   const [startQuery, setStartQuery] = useState(routeConfig.startPoint.name);
   const [endQuery, setEndQuery] = useState(routeConfig.endPoint.name);
@@ -165,43 +169,6 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
 
   return (
     <div className="flex flex-col gap-6 text-[#403D39]">
-      {/* 1-Click Presets */}
-      <div className="flex flex-col gap-2.5">
-        <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-[#EB5E28]" />
-          <span>Quick 1-Click Presets</span>
-        </label>
-        <div className="grid grid-cols-1 gap-2">
-          {PRESET_ROUTES.map((preset) => {
-            const isSelected =
-              preset.startPoint.name === routeConfig.startPoint.name &&
-              preset.endPoint.name === routeConfig.endPoint.name;
-            return (
-              <button
-                key={preset.name}
-                onClick={() => onApplyPreset(preset)}
-                className={`flex items-start justify-between p-2.5 rounded-xl border text-left transition-all ${
-                  isSelected
-                    ? 'bg-[#EB5E28]/10 border-[#EB5E28]/50 shadow-sm text-[#252422]'
-                    : 'bg-[#f5efe4]/80 border-[#dcd4c6] hover:bg-[#ede5d6] hover:border-[#dcd4c6] text-[#403D39]'
-                }`}
-              >
-                <div>
-                  <div className="font-semibold text-xs flex items-center gap-1.5">
-                    <span>{preset.name}</span>
-                    {isSelected && <Check className="w-3.5 h-3.5 text-[#EB5E28]" />}
-                  </div>
-                  <div className="text-[11px] text-[#736d65] mt-0.5">{preset.description}</div>
-                </div>
-                <span className="text-[10px] font-mono bg-white/70 px-2 py-0.5 rounded border border-[#dcd4c6] text-[#c2593f]">
-                  {preset.travelTimeText}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Start & End Points Inputs */}
       <div className="flex flex-col gap-3">
         {/* Start Station */}
@@ -280,6 +247,37 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Generate / Update Route Button */}
+      <div className="flex flex-col gap-1.5 -mt-2">
+        <button
+          type="button"
+          onClick={onGenerateRoute}
+          disabled={isLoadingRoute}
+          className={`w-full py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-md transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+            hasUncalculatedChanges
+              ? 'bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white shadow-[#EB5E28]/25 ring-2 ring-[#EB5E28]/40'
+              : 'bg-[#252422] hover:bg-[#403D39] text-white'
+          }`}
+        >
+          {isLoadingRoute ? (
+            <>
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              <span>Calculating Route...</span>
+            </>
+          ) : (
+            <>
+              <Route className="w-4 h-4" />
+              <span>{hasUncalculatedChanges ? 'Generate Route' : 'Route Up to Date ✓ (Click to Recalculate)'}</span>
+            </>
+          )}
+        </button>
+        {hasUncalculatedChanges && !isLoadingRoute && (
+          <p className="text-[11px] text-[#EB5E28] font-medium text-center flex items-center justify-center gap-1">
+            <span>●</span> Changes detected — click &quot;Generate Route&quot; to calculate path.
+          </p>
+        )}
       </div>
 
       {/* Vehicle Mode Grid & Custom Upload */}

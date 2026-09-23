@@ -5,9 +5,10 @@ import {
   MapPin, 
   Settings2, 
   Video, 
+  Route as RouteIcon,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { RouteConfig, PresetRoute } from '@/types/route';
+import { RouteConfig } from '@/types/route';
 import { calculateRoute, CalculatedRoute } from '@/services/routing';
 import type { MapCanvasHandle } from '@/components/MapAnimator/MapCanvas';
 import { RouteEditor } from '@/components/MapAnimator/RouteEditor';
@@ -65,48 +66,45 @@ export default function Home() {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   const mapCanvasRef = useRef<MapCanvasHandle>(null);
+  const initialCalculatedRef = useRef(false);
 
-  useEffect(() => {
-    let isCancelled = false;
+  const getRouteKey = (config: RouteConfig) => 
+    `${config.startPoint.lat.toFixed(4)},${config.startPoint.lng.toFixed(4)}_${config.endPoint.lat.toFixed(4)},${config.endPoint.lng.toFixed(4)}_${config.vehicle}_${config.modeCategory || ''}_${config.waypoints.map(w => `${w.lat},${w.lng}`).join(';')}`;
 
-    async function loadRoute() {
-      setIsLoadingRoute(true);
-      try {
-        const route = await calculateRoute(
-          routeConfig.startPoint,
-          routeConfig.endPoint,
-          routeConfig.waypoints,
-          routeConfig.vehicle,
-          routeConfig.modeCategory
-        );
-        if (!isCancelled) {
-          setCalculatedRoute(route);
-          setCurrentProgress(0);
-          setIsPlaying(true);
-        }
-      } catch (err) {
-        console.error('Failed to calculate route:', err);
-      } finally {
-        if (!isCancelled) {
-          setIsLoadingRoute(false);
-        }
-      }
+  const [lastCalculatedKey, setLastCalculatedKey] = useState<string>('');
+
+  const currentRouteKey = getRouteKey(routeConfig);
+  const hasUncalculatedChanges = Boolean(!calculatedRoute || currentRouteKey !== lastCalculatedKey);
+
+  const handleGenerateRoute = async (configOverride?: RouteConfig) => {
+    const config = configOverride || routeConfig;
+    setIsLoadingRoute(true);
+    try {
+      const route = await calculateRoute(
+        config.startPoint,
+        config.endPoint,
+        config.waypoints,
+        config.vehicle,
+        config.modeCategory
+      );
+      setCalculatedRoute(route);
+      setLastCalculatedKey(getRouteKey(config));
+      setCurrentProgress(0);
+      setIsPlaying(true);
+    } catch (err) {
+      console.error('Failed to calculate route:', err);
+    } finally {
+      setIsLoadingRoute(false);
     }
+  };
 
-    loadRoute();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [
-    routeConfig.startPoint.lat,
-    routeConfig.startPoint.lng,
-    routeConfig.endPoint.lat,
-    routeConfig.endPoint.lng,
-    routeConfig.vehicle,
-    routeConfig.modeCategory,
-    routeConfig.waypoints,
-  ]);
+  // Only calculate on initial mount once
+  useEffect(() => {
+    if (!initialCalculatedRef.current) {
+      initialCalculatedRef.current = true;
+      handleGenerateRoute(routeConfig);
+    }
+  }, []);
 
   const handleUpdateConfig = (updated: Partial<RouteConfig>) => {
     setRouteConfig((prev) => {
@@ -116,20 +114,6 @@ export default function Home() {
       }
       return next;
     });
-  };
-
-  const handleApplyPreset = (preset: PresetRoute) => {
-    setRouteConfig((prev) => ({
-      ...prev,
-      title: `${preset.startPoint.name} to ${preset.endPoint.name} Journey`,
-      startPoint: preset.startPoint,
-      endPoint: preset.endPoint,
-      vehicle: preset.vehicle,
-      travelTimeText: preset.travelTimeText,
-      durationSeconds: preset.durationSeconds,
-      cameraMode: preset.cameraMode,
-      mapTheme: preset.mapTheme,
-    }));
   };
 
   const handlePlayToggle = () => {
@@ -228,11 +212,43 @@ export default function Home() {
           </div>
           <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
             {activeTab === 'route' ? (
-              <RouteEditor routeConfig={routeConfig} onChange={handleUpdateConfig} onApplyPreset={handleApplyPreset} />
+              <RouteEditor 
+                routeConfig={routeConfig} 
+                onChange={handleUpdateConfig} 
+                onGenerateRoute={() => handleGenerateRoute()}
+                isLoadingRoute={isLoadingRoute}
+                hasUncalculatedChanges={hasUncalculatedChanges}
+              />
             ) : (
               <VisualSettings routeConfig={routeConfig} onChange={handleUpdateConfig} />
             )}
           </div>
+          {activeTab === 'route' && (
+            <div className="p-3 border-t border-[#dcd4c6] bg-[#f5efe4]/90 backdrop-blur-md">
+              <button
+                type="button"
+                onClick={() => handleGenerateRoute()}
+                disabled={isLoadingRoute}
+                className={`w-full py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  hasUncalculatedChanges
+                    ? 'bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white shadow-[#EB5E28]/25 ring-2 ring-[#EB5E28]/40'
+                    : 'bg-[#252422] hover:bg-[#403D39] text-white'
+                }`}
+              >
+                {isLoadingRoute ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Calculating Route...</span>
+                  </>
+                ) : (
+                  <>
+                    <RouteIcon className="w-3.5 h-3.5" />
+                    <span>{hasUncalculatedChanges ? 'Generate Route' : 'Route Up to Date ✓'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Right Side - LIGHT */}
