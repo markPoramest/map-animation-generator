@@ -5,7 +5,6 @@ import {
   MapPin, 
   Settings2, 
   Video, 
-  Route as RouteIcon,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { RouteConfig } from '@/types/route';
@@ -223,32 +222,6 @@ export default function Home() {
               <VisualSettings routeConfig={routeConfig} onChange={handleUpdateConfig} />
             )}
           </div>
-          {activeTab === 'route' && (
-            <div className="p-3 border-t border-[#dcd4c6] bg-[#f5efe4]/90 backdrop-blur-md">
-              <button
-                type="button"
-                onClick={() => handleGenerateRoute()}
-                disabled={isLoadingRoute}
-                className={`w-full py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  hasUncalculatedChanges
-                    ? 'bg-gradient-to-r from-[#EB5E28] to-[#c2593f] hover:from-[#c2593f] hover:to-[#EB5E28] text-white shadow-[#EB5E28]/25 ring-2 ring-[#EB5E28]/40'
-                    : 'bg-[#252422] hover:bg-[#403D39] text-white'
-                }`}
-              >
-                {isLoadingRoute ? (
-                  <>
-                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Calculating Route...</span>
-                  </>
-                ) : (
-                  <>
-                    <RouteIcon className="w-3.5 h-3.5" />
-                    <span>{hasUncalculatedChanges ? 'Generate Route' : 'Route Up to Date ✓'}</span>
-                  </>
-                )}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Right Side - LIGHT */}
