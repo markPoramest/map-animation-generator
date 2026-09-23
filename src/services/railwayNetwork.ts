@@ -560,8 +560,13 @@ export function generateRailwayFallbackPath(
 
 /**
  * Master Railway Route Resolver:
- * Dispatches between Option B (Static GeoJSON Lookup), Option A (Server / Overpass API),
- * and Railway Bezier Spline Fallback (never uses OSRM driving which follows roads).
+ * 1. Static corridor lookup (offline, 0ms)
+ * 2. Server API /api/railway (checks DB → Overpass → stores in DB)
+ * 3. Server-side Overpass direct (when running on server)
+ * 4. Bezier spline fallback (never follows roads)
+ *
+ * Browser NEVER calls Overpass directly — all Overpass traffic goes
+ * through the server API which stores results in Postgres permanently.
  */
 export async function getRailwayRoute(
   startPoint: GeoPoint,
@@ -569,7 +574,7 @@ export async function getRailwayRoute(
   waypoints: GeoPoint[] = [],
   vehicle: VehicleType = 'train'
 ): Promise<[number, number][]> {
-  // 1. Option B: Check major static railway corridors (0ms, 100% offline & reliable)
+  // 1. Check major static railway corridors (0ms, 100% offline & reliable)
   if (waypoints.length === 0) {
     const staticCorridor = matchMajorRailwayCorridor(startPoint, endPoint);
     if (staticCorridor && staticCorridor.length >= 2) {
@@ -578,14 +583,14 @@ export async function getRailwayRoute(
     }
   }
 
-  // 2. Call Next.js Server API Route /api/railway (Server-to-Server Overpass with valid User-Agent, zero CORS)
+  // 2. Browser: Call server API /api/railway (checks DB first, then Overpass, stores result)
   if (typeof window !== 'undefined') {
     try {
       const res = await fetch('/api/railway', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ startPoint, endPoint, waypoints, vehicle }),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(30000),
       });
       if (res.ok) {
         const data = await res.json();
@@ -599,23 +604,23 @@ export async function getRailwayRoute(
     } catch (apiErr) {
       console.error('[Railway] Server API /api/railway failed:', apiErr instanceof Error ? apiErr.message : apiErr);
     }
-  }
-
-  // 3. Option A: Dynamic Overpass API Railway Routing (direct fetch — client-side fallback)
-  if (waypoints.length === 0) {
-    try {
-      const dynamicRoute = await fetchOverpassRailwayRoute(startPoint, endPoint);
-      if (dynamicRoute && dynamicRoute.length >= 2) {
-        console.log('[Railway] Using dynamic Overpass route');
-        return dynamicRoute;
+  } else {
+    // 3. Server-side: Direct Overpass query (only when running on Node server, not browser)
+    if (waypoints.length === 0) {
+      try {
+        const dynamicRoute = await fetchOverpassRailwayRoute(startPoint, endPoint);
+        if (dynamicRoute && dynamicRoute.length >= 2) {
+          console.log('[Railway] Server-side Overpass route found');
+          return dynamicRoute;
+        }
+      } catch (err) {
+        console.error('[Railway] Server-side Overpass failed:', err instanceof Error ? err.message : err);
       }
-    } catch (err) {
-      console.error('[Railway] Direct Overpass fetch failed:', err instanceof Error ? err.message : err);
     }
   }
 
-  // 4. Ultimate Fallback: Railway corridor gentle easement curve (never follows roads)
-  console.warn('[Railway] All API sources failed — using bezier spline fallback');
+  // 4. Ultimate Fallback: Railway corridor bezier spline (never follows roads)
+  console.warn('[Railway] All sources exhausted — using bezier spline fallback');
   return generateRailwayFallbackPath(startPoint, endPoint, waypoints, vehicle);
 }
 
