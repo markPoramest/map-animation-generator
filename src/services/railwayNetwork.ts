@@ -184,99 +184,35 @@ async function queryOverpass(query: string, timeoutMs = 15000): Promise<any | nu
 }
 
 /**
- * Option A: Dynamic Overpass API Railway Routing
- * 1. Attempts to find direct train route relations connecting origin and destination (ultra-fast & exact).
- * 2. Falls back to mainline railway ways (filtering out yard/siding service tracks to prevent 504s).
- * 3. Builds in-memory graph and runs fast PriorityQueue A* shortest path search.
+ * Helper to extract coordinate paths from Overpass relation members.
  */
-export async function fetchOverpassRailwayRoute(
-  startPoint: GeoPoint,
-  endPoint: GeoPoint
-): Promise<[number, number][] | null> {
-  const start: [number, number] = [startPoint.lng, startPoint.lat];
-  const end: [number, number] = [endPoint.lng, endPoint.lat];
-
-  const cacheKey = `${start[0].toFixed(4)},${start[1].toFixed(4)}_to_${end[0].toFixed(4)},${end[1].toFixed(4)}`;
-  if (overpassRouteCache.has(cacheKey)) {
-    return overpassRouteCache.get(cacheKey)!;
-  }
-
-  const straightDistKm = turf.distance(turf.point(start), turf.point(end), { units: 'kilometers' });
-  const isServer = typeof window === 'undefined';
-  const maxDistKm = isServer ? 800 : 200;
-
-  if (straightDistKm > maxDistKm) {
-    console.error(`[Railway] Route distance ${straightDistKm.toFixed(0)}km exceeds ${maxDistKm}km limit — skipping Overpass`);
-    return null;
-  }
-
-  let waySegments: [number, number][][] = [];
-
-  // Stage 1: Try direct train route relation query (matches through-train services like JR Hokuto, Shinkansen, TGV)
-  console.log(`[Railway] Stage 1: Querying direct train relations connecting ${startPoint.name || 'origin'} and ${endPoint.name || 'destination'}...`);
-  const relQuery = `[out:json][timeout:25];
-relation["route"~"^(train|railway)$"](around:5000, ${start[1]}, ${start[0]}) -> .start_routes;
-relation["route"~"^(train|railway)$"](around:5000, ${end[1]}, ${end[0]}) -> .end_routes;
-(.start_routes; - (.start_routes; - .end_routes;););
-out geom;`;
-
-  try {
-    const relData = await queryOverpass(relQuery, 25000);
-    if (relData && relData.elements && relData.elements.length > 0) {
-      const relations = relData.elements.filter((e: any) => e.type === 'relation' && Array.isArray(e.members));
-      console.log(`[Railway] Stage 1 found ${relations.length} matching train relation(s)`);
-
-      for (const rel of relations) {
-        if (rel.tags?.name) {
-          console.log(`[Railway] Using train relation: "${rel.tags.name}"`);
-        }
-        for (const m of rel.members) {
-          if (m.type === 'way' && Array.isArray(m.geometry) && m.geometry.length >= 2) {
-            waySegments.push(m.geometry.map((g: any) => [g.lon, g.lat]));
-          }
-        }
+function extractSegmentsFromRelations(elements: any[]): [number, number][][] {
+  const segments: [number, number][][] = [];
+  const relations = elements.filter((e) => e.type === 'relation' && Array.isArray(e.members));
+  for (const rel of relations) {
+    if (rel.tags?.name) {
+      console.log(`[Railway] Loaded relation: "${rel.tags.name}"`);
+    }
+    for (const m of rel.members) {
+      if (m.type === 'way' && Array.isArray(m.geometry) && m.geometry.length >= 2) {
+        segments.push(m.geometry.map((g: any) => [g.lon, g.lat]));
       }
     }
-  } catch (relErr) {
-    console.warn('[Railway] Stage 1 relation query exception:', relErr instanceof Error ? relErr.message : relErr);
   }
+  return segments;
+}
 
-  // Stage 2: Fallback to mainline railway corridor bounding box query (excludes sidings and freight yards)
-  if (waySegments.length === 0) {
-    console.log(`[Railway] Stage 2: Querying mainline railway tracks in bounding corridor...`);
-    const margin = Math.max(0.15, Math.min(0.5, straightDistKm * 0.003)); // 15km to 50km buffer for curves
-    const minLat = Math.min(start[1], end[1]) - margin;
-    const maxLat = Math.max(start[1], end[1]) + margin;
-    const minLng = Math.min(start[0], end[0]) - margin;
-    const maxLng = Math.max(start[0], end[0]) + margin;
-
-    const bboxQuery = `[out:json][timeout:25];
-(
-  way["railway"="rail"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
-  way["railway"="narrow_gauge"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
-);
-out geom;`;
-
-    try {
-      const bboxData = await queryOverpass(bboxQuery, 25000);
-      if (bboxData && Array.isArray(bboxData.elements)) {
-        for (const el of bboxData.elements) {
-          if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2) {
-            if (el.tags && (el.tags.railway === 'abandoned' || el.tags.railway === 'disused')) continue;
-            waySegments.push(el.geometry.map((g: any) => [g.lon, g.lat]));
-          }
-        }
-        console.log(`[Railway] Stage 2 retrieved ${waySegments.length} mainline way segments`);
-      }
-    } catch (bboxErr) {
-      console.error('[Railway] Stage 2 mainline query failed:', bboxErr instanceof Error ? bboxErr.message : bboxErr);
-    }
-  }
-
-  if (waySegments.length === 0) {
-    console.error('[Railway] No railway geometry retrieved from Overpass');
-    return null;
-  }
+/**
+ * Builds an in-memory topology graph from way segments, bridges station switches/dead-ends,
+ * and runs PriorityQueue A* to find the shortest continuous track.
+ */
+function solveRailwayGraph(
+  waySegments: [number, number][][],
+  start: [number, number],
+  end: [number, number],
+  cacheKey?: string
+): [number, number][] | null {
+  if (waySegments.length === 0) return null;
 
   // Build in-memory topology graph
   const graph = new Map<string, { to: string; dist: number; coord: [number, number] }[]>();
@@ -286,14 +222,11 @@ out geom;`;
     const k1 = coordKey(p1);
     const k2 = coordKey(p2);
     if (k1 === k2) return;
-
     keyToCoord.set(k1, p1);
     keyToCoord.set(k2, p2);
-
     const dist = Math.sqrt(distanceSq(p1, p2));
     if (!graph.has(k1)) graph.set(k1, []);
     if (!graph.has(k2)) graph.set(k2, []);
-
     graph.get(k1)!.push({ to: k2, dist, coord: p2 });
     graph.get(k2)!.push({ to: k1, dist, coord: p1 });
   }
@@ -309,9 +242,9 @@ out geom;`;
     return null;
   }
 
-  // Gap-bridging pass: connect dangling dead-ends (degree <= 2) across small gaps (< 250m)
-  const BRIDGE_THRESHOLD_SQ = 0.0025 * 0.0025; // ~250m
-  const GRID_SIZE = 0.003;
+  // Gap-bridging pass: connect dangling dead-ends (degree <= 2) across small gaps (< 350m for station transfers/switches)
+  const BRIDGE_THRESHOLD_SQ = 0.0035 * 0.0035; // ~350m
+  const GRID_SIZE = 0.004;
   const spatialGrid = new Map<string, string[]>();
 
   for (const [key, coord] of keyToCoord.entries()) {
@@ -388,8 +321,8 @@ out geom;`;
   const endSnapDeg = Math.sqrt(minEndDist);
   console.log(`[Railway] Snap distances: start=${(startSnapDeg * 111).toFixed(2)}km, end=${(endSnapDeg * 111).toFixed(2)}km`);
 
-  // Snap limit: ~15km
-  if (!startNodeKey || !endNodeKey || startSnapDeg > 0.15 || endSnapDeg > 0.15) {
+  // Snap limit: ~25km (handles stations with bus or outer links)
+  if (!startNodeKey || !endNodeKey || startSnapDeg > 0.25 || endSnapDeg > 0.25) {
     console.error(`[Railway] Snap failed — station too far from railway network (start=${(startSnapDeg * 111).toFixed(1)}km, end=${(endSnapDeg * 111).toFixed(1)}km)`);
     return null;
   }
@@ -497,14 +430,116 @@ out geom;`;
     const finalRoute = simplified.geometry.coordinates as [number, number][];
 
     console.log(`[Railway] ✓ Dynamic route generated: ${finalRoute.length} points, distance: ${turf.length(rawLine, { units: 'kilometers' }).toFixed(1)} km`);
-    overpassRouteCache.set(cacheKey, finalRoute);
+    if (cacheKey) {
+      overpassRouteCache.set(cacheKey, finalRoute);
+    }
     return finalRoute;
   }
 
-  if (iterations >= MAX_ITERATIONS) {
-    console.error('[Railway] A* exhausted max iterations — graph may be too complex');
-  } else {
-    console.error('[Railway] A* found no continuous path between stations');
+  return null;
+}
+
+export async function fetchOverpassRailwayRoute(
+  startPoint: GeoPoint,
+  endPoint: GeoPoint
+): Promise<[number, number][] | null> {
+  const start: [number, number] = [startPoint.lng, startPoint.lat];
+  const end: [number, number] = [endPoint.lng, endPoint.lat];
+
+  const cacheKey = `${start[0].toFixed(4)},${start[1].toFixed(4)}_to_${end[0].toFixed(4)},${end[1].toFixed(4)}`;
+  if (overpassRouteCache.has(cacheKey)) {
+    return overpassRouteCache.get(cacheKey)!;
+  }
+
+  const straightDistKm = turf.distance(turf.point(start), turf.point(end), { units: 'kilometers' });
+  const isServer = typeof window === 'undefined';
+  const maxDistKm = isServer ? 800 : 200;
+
+  if (straightDistKm > maxDistKm) {
+    console.error(`[Railway] Route distance ${straightDistKm.toFixed(0)}km exceeds ${maxDistKm}km limit — skipping Overpass`);
+    return null;
+  }
+
+  // --- STAGE 1A: Direct through-train relations (around:5000 intersection) ---
+  console.log(`[Railway] Stage 1A: Querying direct through-train relations connecting ${startPoint.name || 'origin'} and ${endPoint.name || 'destination'}...`);
+  const directRelQuery = `[out:json][timeout:25];
+relation["route"~"^(train|railway)$"](around:5000, ${start[1]}, ${start[0]}) -> .start_routes;
+relation["route"~"^(train|railway)$"](around:5000, ${end[1]}, ${end[0]}) -> .end_routes;
+(.start_routes; - (.start_routes; - .end_routes;););
+out geom;`;
+
+  try {
+    const relData = await queryOverpass(directRelQuery, 25000);
+    if (relData && Array.isArray(relData.elements) && relData.elements.length > 0) {
+      const directSegments = extractSegmentsFromRelations(relData.elements);
+      if (directSegments.length > 0) {
+        console.log(`[Railway] Stage 1A retrieved ${directSegments.length} segments from direct relations`);
+        const path = solveRailwayGraph(directSegments, start, end, cacheKey);
+        if (path) return path;
+        console.warn('[Railway] Stage 1A graph disconnected, falling forward to Stage 1B...');
+      }
+    }
+  } catch (err) {
+    console.warn('[Railway] Stage 1A failed:', err instanceof Error ? err.message : err);
+  }
+
+  // --- STAGE 1B: Connecting train relations (around:25000 union for regional feeder + high-speed lines) ---
+  console.log(`[Railway] Stage 1B: Querying connecting train relations (regional feeder & high-speed lines)...`);
+  const connectingRelQuery = `[out:json][timeout:25];
+(
+  relation["route"~"^(train|railway)$"](around:25000, ${start[1]}, ${start[0]});
+  relation["route"~"^(train|railway)$"](around:25000, ${end[1]}, ${end[0]});
+);
+out geom;`;
+
+  try {
+    const connData = await queryOverpass(connectingRelQuery, 25000);
+    if (connData && Array.isArray(connData.elements) && connData.elements.length > 0) {
+      const connSegments = extractSegmentsFromRelations(connData.elements);
+      if (connSegments.length > 0) {
+        console.log(`[Railway] Stage 1B retrieved ${connSegments.length} segments from connecting relations`);
+        const path = solveRailwayGraph(connSegments, start, end, cacheKey);
+        if (path) return path;
+        console.warn('[Railway] Stage 1B graph disconnected, falling forward to Stage 2...');
+      }
+    }
+  } catch (err) {
+    console.warn('[Railway] Stage 1B failed:', err instanceof Error ? err.message : err);
+  }
+
+  // --- STAGE 2: Mainline corridor bounding box (wide margin to never clip mountain/undersea loops) ---
+  console.log(`[Railway] Stage 2: Querying mainline railway tracks in wide bounding corridor...`);
+  const margin = Math.max(0.5, Math.min(1.0, straightDistKm * 0.005)); // at least ~55km buffer for curves/tunnels/bays
+  const minLat = Math.min(start[1], end[1]) - margin;
+  const maxLat = Math.max(start[1], end[1]) + margin;
+  const minLng = Math.min(start[0], end[0]) - margin;
+  const maxLng = Math.max(start[0], end[0]) + margin;
+
+  const bboxQuery = `[out:json][timeout:25];
+(
+  way["railway"="rail"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
+  way["railway"="narrow_gauge"][!"service"](${minLat},${minLng},${maxLat},${maxLng});
+);
+out geom;`;
+
+  try {
+    const bboxData = await queryOverpass(bboxQuery, 25000);
+    if (bboxData && Array.isArray(bboxData.elements)) {
+      const bboxSegments: [number, number][][] = [];
+      for (const el of bboxData.elements) {
+        if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2) {
+          if (el.tags && (el.tags.railway === 'abandoned' || el.tags.railway === 'disused')) continue;
+          bboxSegments.push(el.geometry.map((g: any) => [g.lon, g.lat]));
+        }
+      }
+      if (bboxSegments.length > 0) {
+        console.log(`[Railway] Stage 2 retrieved ${bboxSegments.length} mainline way segments`);
+        const path = solveRailwayGraph(bboxSegments, start, end, cacheKey);
+        if (path) return path;
+      }
+    }
+  } catch (bboxErr) {
+    console.error('[Railway] Stage 2 mainline query failed:', bboxErr instanceof Error ? bboxErr.message : bboxErr);
   }
 
   return null;
