@@ -362,7 +362,7 @@ function drawPinOnCanvas(
     ctx.translate(-x, -y);
   }
   const isStart = type === 'start';
-  const accentColor = isStart ? '#059669' : '#EB5E28';
+  const accentColor = '#059669';
   const tagText = isStart ? 'START' : 'ARRIVED';
 
   // 1. Ground shadow
@@ -374,7 +374,7 @@ function drawPinOnCanvas(
   // 2. Ground pulse halo
   ctx.beginPath();
   ctx.arc(x, y, 12 * scale, 0, Math.PI * 2);
-  ctx.strokeStyle = isStart ? 'rgba(5, 150, 105, 0.45)' : 'rgba(235, 94, 40, 0.45)';
+  ctx.strokeStyle = 'rgba(5, 150, 105, 0.45)';
   ctx.lineWidth = 2.5 * scale;
   ctx.stroke();
 
@@ -1699,8 +1699,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
             style={{ left: `${endPinScreenPos.x}px`, top: `${endPinScreenPos.y}px` }}
           >
             <div className="relative flex items-center justify-center animate-pop-in-bounce origin-center">
-              <span className="absolute -inset-2.5 rounded-full bg-[#EB5E28]/35 animate-ping pointer-events-none" />
-              <div className="w-5 h-5 rounded-full bg-[#EB5E28] border-2 border-white shadow-lg flex items-center justify-center">
+              <span className="absolute -inset-2.5 rounded-full bg-emerald-500/35 animate-ping pointer-events-none" />
+              <div className="w-5 h-5 rounded-full bg-emerald-600 border-2 border-white shadow-lg flex items-center justify-center">
                 <div className="w-1.5 h-1.5 rounded-full bg-white" />
               </div>
             </div>
@@ -1719,8 +1719,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           >
             <div className="flex flex-col items-center animate-pop-in-bounce origin-bottom">
               {/* Prominent Card Pill with Arrival Highlight */}
-              <div className="bg-white/95 text-[#252422] rounded-xl shadow-2xl border border-[#EB5E28] ring-4 ring-[#EB5E28]/25 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 select-none scale-105">
-                <span className="px-1.5 py-0.5 rounded bg-[#EB5E28] text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
+              <div className="bg-white/95 text-[#252422] rounded-xl shadow-2xl border border-emerald-500 ring-4 ring-emerald-500/25 backdrop-blur-md px-3 py-1.5 flex items-center gap-2 select-none scale-105">
+                <span className="px-1.5 py-0.5 rounded bg-emerald-600 text-white font-black text-[9px] tracking-wider uppercase shadow-sm">
                   ARRIVED
                 </span>
                 <span className="text-xs font-bold text-[#252422] tracking-tight whitespace-nowrap">
@@ -1728,7 +1728,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
                 </span>
               </div>
               {/* Small bottom pointer arrow */}
-              <div className="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] border-t-[#EB5E28]" />
+              <div className="w-0 h-0 border-x-4 border-x-transparent border-t-[8px] border-t-emerald-600" />
             </div>
           </div>
         )}
