@@ -58,12 +58,13 @@ async function ensureTable(sql: NeonQueryFunction<false, false>): Promise<boolea
  */
 function buildRouteKey(
   startLat: number, startLng: number,
-  endLat: number, endLng: number
+  endLat: number, endLng: number,
+  vehicle: string = 'train'
 ): string {
   const a = `${startLat.toFixed(3)},${startLng.toFixed(3)}`;
   const b = `${endLat.toFixed(3)},${endLng.toFixed(3)}`;
   const [first, second] = [a, b].sort();
-  return `${first}_${second}`;
+  return `v3_${vehicle}_${first}_${second}`;
 }
 
 /**
@@ -71,7 +72,8 @@ function buildRouteKey(
  */
 export async function getStoredRoute(
   startLat: number, startLng: number,
-  endLat: number, endLng: number
+  endLat: number, endLng: number,
+  vehicle: string = 'train'
 ): Promise<[number, number][] | null> {
   const sql = getSql();
   if (!sql) return null;
@@ -79,7 +81,7 @@ export async function getStoredRoute(
   const ready = await ensureTable(sql);
   if (!ready) return null;
 
-  const key = buildRouteKey(startLat, startLng, endLat, endLng);
+  const key = buildRouteKey(startLat, startLng, endLat, endLng, vehicle);
 
   try {
     const rows = await sql`
@@ -110,7 +112,8 @@ export async function storeRoute(
   endLat: number, endLng: number,
   coordinates: [number, number][],
   source: string = 'overpass',
-  distanceKm?: number
+  distanceKm?: number,
+  vehicle: string = 'train'
 ): Promise<void> {
   const sql = getSql();
   if (!sql) return;
@@ -119,7 +122,7 @@ export async function storeRoute(
   const ready = await ensureTable(sql);
   if (!ready) return;
 
-  const key = buildRouteKey(startLat, startLng, endLat, endLng);
+  const key = buildRouteKey(startLat, startLng, endLat, endLng, vehicle);
   const coordsJson = JSON.stringify(coordinates);
 
   try {

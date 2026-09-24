@@ -22,7 +22,7 @@ export async function POST(req: Request) {
 
     // 0. Check database for stored railway route data
     if (!waypoints || waypoints.length === 0) {
-      const stored = await getStoredRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng);
+      const stored = await getStoredRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng, vehicle);
       if (stored && stored.length >= 2) {
         // Route is stored bidirectionally — check if we need to reverse for correct direction
         const startCoord: [number, number] = [startPoint.lng, startPoint.lat];
@@ -45,20 +45,20 @@ export async function POST(req: Request) {
         // Store static corridor in database for future lookups
         const line = turf.lineString(staticTrack);
         const distKm = turf.length(line, { units: 'kilometers' });
-        await storeRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng, staticTrack, 'static-corridor', distKm);
+        await storeRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng, staticTrack, 'static-corridor', distKm, vehicle);
         return NextResponse.json({ coordinates: staticTrack, source: 'static-corridor' });
       }
     }
 
     // 2. Dynamic Overpass API query (server-side with valid User-Agent)
     try {
-      const overpassTrack = await fetchOverpassRailwayRoute(startPoint, endPoint);
+      const overpassTrack = await fetchOverpassRailwayRoute(startPoint, endPoint, vehicle);
       if (overpassTrack && overpassTrack.length >= 2) {
         console.log(`[Railway API] ✓ Overpass route found (${overpassTrack.length} points)`);
         // Store real railway data in database permanently
         const line = turf.lineString(overpassTrack);
         const distKm = turf.length(line, { units: 'kilometers' });
-        await storeRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng, overpassTrack, 'overpass-railway', distKm);
+        await storeRoute(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng, overpassTrack, 'overpass-railway', distKm, vehicle);
         return NextResponse.json({ coordinates: overpassTrack, source: 'overpass-railway' });
       }
       console.warn('[Railway API] Overpass returned no usable route');
