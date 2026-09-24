@@ -67,7 +67,7 @@ export function generateCurvedPath(points: GeoPoint[], vehicle: VehicleType): [n
 }
 
 /**
- * Attempt to get road/path coordinates from OSRM
+ * Attempt to get road/pedestrian/cycle path coordinates from OpenStreetMap / OSRM routing
  */
 export async function fetchOSRMRoute(points: GeoPoint[], vehicle: VehicleType): Promise<[number, number][] | null> {
   if (vehicle === 'airplane' || vehicle === 'ship' || vehicle === 'train' || vehicle === 'shinkansen') {
@@ -75,20 +75,47 @@ export async function fetchOSRMRoute(points: GeoPoint[], vehicle: VehicleType): 
   }
 
   const coordStr = points.map((p) => `${p.lng},${p.lat}`).join(';');
-  const profile = (vehicle === 'walk' || vehicle === 'bicycle') ? 'walking' : 'driving';
-  const url = `https://router.project-osrm.org/route/v1/${profile}/${coordStr}?overview=full&geometries=geojson`;
+  
+  // Profile routing URLs:
+  // - 'walk': OpenStreetMap routed-foot (supports narrow alleys, footways, steps, pedestrian plazas & park trails)
+  // - 'bicycle': OpenStreetMap routed-bike (supports cycleways, bike paths, and bike-friendly roads)
+  // - 'car' / 'bus': OpenStreetMap routed-car and standard OSRM driving
+  const candidateUrls: string[] = [];
 
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.routes && data.routes.length > 0) {
-        return data.routes[0].geometry.coordinates as [number, number][];
-      }
-    }
-  } catch (err) {
-    console.warn('OSRM route fetch failed, falling back to curved spline:', err);
+  if (vehicle === 'walk') {
+    candidateUrls.push(
+      `https://routing.openstreetmap.de/routed-foot/route/v1/driving/${coordStr}?overview=full&geometries=geojson`,
+      `https://router.project-osrm.org/route/v1/walking/${coordStr}?overview=full&geometries=geojson`
+    );
+  } else if (vehicle === 'bicycle') {
+    candidateUrls.push(
+      `https://routing.openstreetmap.de/routed-bike/route/v1/driving/${coordStr}?overview=full&geometries=geojson`,
+      `https://router.project-osrm.org/route/v1/bicycle/${coordStr}?overview=full&geometries=geojson`
+    );
+  } else {
+    candidateUrls.push(
+      `https://routing.openstreetmap.de/routed-car/route/v1/driving/${coordStr}?overview=full&geometries=geojson`,
+      `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`
+    );
   }
+
+  for (const url of candidateUrls) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'MapAnimator/1.0' },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.routes && data.routes.length > 0 && data.routes[0].geometry?.coordinates?.length > 1) {
+          return data.routes[0].geometry.coordinates as [number, number][];
+        }
+      }
+    } catch (err) {
+      console.warn(`[Routing] Endpoint failed for ${vehicle} (${url}):`, err instanceof Error ? err.message : err);
+    }
+  }
+
   return null;
 }
 
