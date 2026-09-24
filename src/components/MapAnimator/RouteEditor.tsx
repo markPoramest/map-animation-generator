@@ -253,7 +253,7 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
         {/* Destination Station */}
         <div className="relative">
           <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-            <MapPin className="w-3.5 h-3.5 text-[#EB5E28]" />
+            <MapPin className="w-3.5 h-3.5 text-emerald-600" />
             <span>Destination Point (End)</span>
           </label>
           <div className="relative">
