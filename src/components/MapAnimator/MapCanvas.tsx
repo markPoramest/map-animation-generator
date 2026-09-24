@@ -319,30 +319,19 @@ export function easeOutBack(t: number): number {
 
 /**
  * Checks whether the destination marker, label, and arrival banner should be revealed.
- * Stays hidden initially (progress <= 0.01) and while traveling.
- * Reveals only when progress >= 0.98 or within the final 0.5 km of the destination.
+ * Stays hidden while the route animation and vehicle are traveling.
+ * Reveals exactly when the route animation and vehicle reach the destination (progress >= pArrive).
  */
 export function checkDestinationReached(
   progress: number,
   durationSeconds: number,
   calculatedRoute: CalculatedRoute | null
 ): boolean {
-  if (!calculatedRoute || !calculatedRoute.coordinates || calculatedRoute.coordinates.length < 2 || progress <= 0.01) {
+  if (!calculatedRoute || !calculatedRoute.coordinates || calculatedRoute.coordinates.length < 2) {
     return false;
   }
   const { pArrive } = getTimelinePhases(durationSeconds);
-  const isArrived = progress >= pArrive;
-  const travelFraction = isArrived ? 1.0 : progress / pArrive;
-  const easedT = easeInOutQuad(travelFraction);
-  const totalKm = calculatedRoute.totalDistanceKm || 0;
-  const currentDistKm = Math.min(totalKm, Math.max(0, easedT * totalKm));
-  const remainingDistKm = totalKm - currentDistKm;
-
-  return (
-    progress >= 0.98 ||
-    travelFraction >= 0.98 ||
-    (totalKm > 0 && remainingDistKm <= 0.5 && currentDistKm > 0.1)
-  );
+  return progress >= pArrive;
 }
 
 // Canvas Overlay Drawing Helpers for Video Export
