@@ -300,11 +300,13 @@ export const VehicleIcon: React.FC<VehicleIconProps> = ({
         style={{ width: size, height: size, ...glowStyle }}
         className={`inline-flex items-center justify-center relative select-none pointer-events-none ${className}`}
       >
-        <img
-          src={customImageUrl}
-          alt="Custom Vehicle"
-          className="w-full h-full object-contain filter drop-shadow-md select-none pointer-events-none"
-        />
+        <div className="w-full h-full rounded-full bg-white border-2 border-[#EB5E28] shadow-lg shadow-[#EB5E28]/35 flex items-center justify-center p-1 overflow-hidden">
+          <img
+            src={customImageUrl}
+            alt="Custom Vehicle"
+            className="w-full h-full object-contain rounded-full select-none pointer-events-none"
+          />
+        </div>
       </div>
     );
   }
