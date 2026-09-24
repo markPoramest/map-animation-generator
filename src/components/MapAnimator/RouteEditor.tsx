@@ -144,18 +144,53 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
     return { hours, minutes };
   };
 
-  const { hours: currentHours, minutes: currentMinutes } = parseTime(routeConfig.travelTimeText || '40 min');
+  const initialTime = parseTime(routeConfig.travelTimeText || '40 min');
+  const [hoursInput, setHoursInput] = useState<string>(() => (initialTime.hours > 0 ? initialTime.hours.toString() : ''));
+  const [minutesInput, setMinutesInput] = useState<string>(() => (initialTime.minutes > 0 ? initialTime.minutes.toString() : ''));
 
-  const handleTimeChange = (h: number, m: number) => {
+  useEffect(() => {
+    const { hours, minutes } = parseTime(routeConfig.travelTimeText || '');
+    setHoursInput(hours > 0 ? hours.toString() : '');
+    setMinutesInput(minutes > 0 ? minutes.toString() : '');
+  }, [routeConfig.travelTimeText]);
+
+  const updateTravelTime = (hStr: string, mStr: string) => {
+    const h = hStr === '' ? 0 : parseInt(hStr, 10);
+    const m = mStr === '' ? 0 : parseInt(mStr, 10);
     let text = '';
     if (h > 0 && m > 0) {
       text = `${h}h ${m} min`;
     } else if (h > 0) {
       text = `${h} ${h === 1 ? 'hr' : 'hrs'}`;
-    } else {
+    } else if (m > 0) {
       text = `${m} min`;
+    } else {
+      text = '';
     }
     onChange({ travelTimeText: text });
+  };
+
+  const handleHoursChange = (raw: string) => {
+    const digitsOnly = raw.replace(/[^0-9]/g, '');
+    setHoursInput(digitsOnly);
+    updateTravelTime(digitsOnly, minutesInput);
+  };
+
+  const handleMinutesChange = (raw: string) => {
+    const digitsOnly = raw.replace(/[^0-9]/g, '');
+    setMinutesInput(digitsOnly);
+    updateTravelTime(hoursInput, digitsOnly);
+  };
+
+  const handleNumberKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (
+      !/[0-9]/.test(e.key) &&
+      !['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter'].includes(e.key) &&
+      !e.ctrlKey &&
+      !e.metaKey
+    ) {
+      e.preventDefault();
+    }
   };
 
   const handleSwapPoints = () => {
@@ -437,45 +472,53 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
         )}
       </div>
 
-      {/* Travel Time Badge Dropdown */}
+      {/* Travel Time Badge Inputs (Numeric Textboxes) */}
       <div className="flex flex-col gap-2.5">
         <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center justify-between">
           <span className="flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5 text-[#EB5E28]" />
             <span>Travel Time</span>
           </span>
-          <span className="text-[10px] text-[#EB5E28] font-semibold">{routeConfig.travelTimeText}</span>
+          <span className="text-[10px] text-[#EB5E28] font-semibold">{routeConfig.travelTimeText || '0 min'}</span>
         </label>
 
-        {/* Hours and Minutes Dropdowns */}
+        {/* Hours and Minutes Textboxes (numbers only) */}
         <div className="grid grid-cols-2 gap-2.5">
           <div className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold text-[#736d65]">Hours</span>
-            <select
-              value={currentHours}
-              onChange={(e) => handleTimeChange(Number(e.target.value), currentMinutes)}
-              className="bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3 py-2 text-xs font-semibold text-[#252422] focus:border-[#EB5E28] outline-none cursor-pointer"
-            >
-              {[...Array(25).keys()].map((h) => (
-                <option key={h} value={h}>
-                  {h} {h === 1 ? 'hr' : 'hrs'}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={hoursInput}
+                onChange={(e) => handleHoursChange(e.target.value)}
+                onKeyDown={handleNumberKeyDown}
+                placeholder="0"
+                className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3 py-2 pr-9 text-xs font-semibold text-[#252422] focus:border-[#EB5E28] focus:bg-white transition-all outline-none"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-[#736d65] font-semibold pointer-events-none">
+                hrs
+              </span>
+            </div>
           </div>
           <div className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold text-[#736d65]">Minutes</span>
-            <select
-              value={currentMinutes}
-              onChange={(e) => handleTimeChange(currentHours, Number(e.target.value))}
-              className="bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3 py-2 text-xs font-semibold text-[#252422] focus:border-[#EB5E28] outline-none cursor-pointer"
-            >
-              {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55].map((m) => (
-                <option key={m} value={m}>
-                  {m} min
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={minutesInput}
+                onChange={(e) => handleMinutesChange(e.target.value)}
+                onKeyDown={handleNumberKeyDown}
+                placeholder="0"
+                className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3 py-2 pr-9 text-xs font-semibold text-[#252422] focus:border-[#EB5E28] focus:bg-white transition-all outline-none"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-[#736d65] font-semibold pointer-events-none">
+                min
+              </span>
+            </div>
           </div>
         </div>
 
