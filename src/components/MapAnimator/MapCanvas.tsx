@@ -919,10 +919,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           ctx.scale(vehFlipX, 1);
           ctx.rotate((tiltDeg * Math.PI) / 180);
           const vehicleSize = 58 * scaleX;
-          ctx.shadowColor = 'rgba(0,0,0,0.45)';
-          ctx.shadowBlur = 10 * scaleX;
-          ctx.shadowOffsetY = 4 * scaleY;
-          ctx.drawImage(vehicleImageRef.current, -vehicleSize / 2, -vehicleSize / 2, vehicleSize, vehicleSize);
+
+          if (routeConfig.vehicle === 'custom') {
+            const radius = vehicleSize / 2;
+            // Circle shadow
+            ctx.shadowColor = 'rgba(235, 94, 40, 0.45)';
+            ctx.shadowBlur = 12 * scaleX;
+            ctx.shadowOffsetY = 3 * scaleY;
+
+            // White circle background
+            ctx.beginPath();
+            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            // Orange circle frame
+            ctx.lineWidth = 2.5 * scaleX;
+            ctx.strokeStyle = '#EB5E28';
+            ctx.stroke();
+
+            // Clip image to inner circle
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(0, 0, radius - 1.5 * scaleX, 0, Math.PI * 2);
+            ctx.clip();
+            const pad = 5 * scaleX;
+            const innerSize = vehicleSize - pad * 2;
+            ctx.drawImage(vehicleImageRef.current, -innerSize / 2, -innerSize / 2, innerSize, innerSize);
+            ctx.restore();
+          } else {
+            ctx.shadowColor = 'rgba(0,0,0,0.45)';
+            ctx.shadowBlur = 10 * scaleX;
+            ctx.shadowOffsetY = 4 * scaleY;
+            ctx.drawImage(vehicleImageRef.current, -vehicleSize / 2, -vehicleSize / 2, vehicleSize, vehicleSize);
+          }
           ctx.restore();
         }
       }

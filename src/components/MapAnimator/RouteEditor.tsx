@@ -365,11 +365,11 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
                 }`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-11 h-11 rounded-xl bg-white border border-[#dcd4c6] p-1 flex items-center justify-center flex-shrink-0 shadow-sm overflow-hidden">
+                <div className="w-11 h-11 rounded-full bg-white border-2 border-[#EB5E28] p-1 flex items-center justify-center flex-shrink-0 shadow-md shadow-[#EB5E28]/20 overflow-hidden">
                   <img
                     src={routeConfig.customVehicleImage}
                     alt="Custom vehicle"
-                    className="w-full h-full object-contain"
+                    className="w-full h-full object-contain rounded-full"
                   />
                 </div>
                 <div className="flex flex-col min-w-0">
