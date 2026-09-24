@@ -691,6 +691,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
   const [midpointScreenPos, setMidpointScreenPos] = useState<{ x: number; y: number } | null>(null);
   const [isDestinationRevealed, setIsDestinationRevealed] = useState<boolean>(false);
   const [isArrivedState, setIsArrivedState] = useState<boolean>(false);
+  const [isSummaryVisibleState, setIsSummaryVisibleState] = useState<boolean>(false);
   const categoryImageRef = useRef<HTMLImageElement | null>(null);
 
   // Calculate route midpoint coordinate using Turf.js
@@ -728,12 +729,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
 
   useEffect(() => {
     progressRef.current = currentProgress;
+    const duration = routeConfig.durationSeconds || 8;
     const reached = checkDestinationReached(
       currentProgress,
-      routeConfig.durationSeconds || 8,
+      duration,
       calculatedRoute
     );
     setIsDestinationRevealed(reached);
+    const { pArrive, pOverview } = getTimelinePhases(duration);
+    setIsArrivedState(currentProgress >= pArrive);
+    setIsSummaryVisibleState(currentProgress >= pOverview);
   }, [currentProgress, routeConfig.durationSeconds, calculatedRoute]);
 
   // Preload vehicle image (SVG or custom uploaded image) for canvas composite rendering
@@ -949,11 +954,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY);
       }
 
-      // 5. Draw Google Maps-Style Route Summary Badge at Route Midpoint upon arrival
-      if (isArrived && midpointCoord && calculatedRoute) {
+      // 5. Draw Google Maps-Style Route Summary Badge at Route Midpoint after arrival during overview
+      const { pArrive: pArr, pOverview } = getTimelinePhases(routeConfig.durationSeconds || 10);
+      if (progress >= pOverview && midpointCoord && calculatedRoute) {
         const mp = map.project(midpointCoord);
-        const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
-        const revealT = Math.min(1.0, Math.max(0, (progress - pArr) / 0.03));
+        const revealT = Math.min(1.0, Math.max(0, (progress - pOverview) / 0.03));
         const popScale = Math.max(0.5, Math.min(1.05, easeOutBack(revealT)));
         drawRouteSummaryBadgeOnCanvas(
           ctx,
@@ -1327,10 +1332,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       if (!map || !calculatedRoute || !calculatedRoute.coordinates.length) return;
 
       const duration = routeConfig.durationSeconds || 10;
-      const { pArrive } = getTimelinePhases(duration);
+      const { pArrive, pOverview } = getTimelinePhases(duration);
       const isArrived = progress >= pArrive;
       const travelFraction = isArrived ? 1.0 : progress / pArrive;
       setIsArrivedState(isArrived);
+      setIsSummaryVisibleState(progress >= pOverview);
 
       // Update destination reveal state in render loop
       const destReached = checkDestinationReached(progress, duration, calculatedRoute);
@@ -1483,6 +1489,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       progressRef.current = 0;
       setIsDestinationRevealed(false);
       setIsArrivedState(false);
+      setIsSummaryVisibleState(false);
       onProgressChangeRef.current(0);
       updateProgressVisualsRef.current(0);
     } else {
@@ -1611,8 +1618,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       setIsDestinationRevealed(
         checkDestinationReached(progress, currentConfig.durationSeconds || 8, currentRoute)
       );
-      const { pArrive } = getTimelinePhases(currentConfig.durationSeconds || 8);
+      const { pArrive, pOverview } = getTimelinePhases(currentConfig.durationSeconds || 8);
       setIsArrivedState(progress >= pArrive);
+      setIsSummaryVisibleState(progress >= pOverview);
       updateProgressVisuals(progress);
     },
     resetCamera: () => {
@@ -1761,8 +1769,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           </div>
         )}
 
-        {/* Google Maps-Style Route Summary Badge at Route Midpoint (z-30) */}
-        {isArrivedState && midpointScreenPos && calculatedRoute && (
+        {/* Google Maps-Style Route Summary Badge at Route Midpoint (z-30) - appears after arrival */}
+        {isSummaryVisibleState && midpointScreenPos && calculatedRoute && (
           <div
             className="absolute will-change-transform z-30 pointer-events-none"
             style={{
