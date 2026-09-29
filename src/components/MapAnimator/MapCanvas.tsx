@@ -318,6 +318,28 @@ export function easeOutBack(t: number): number {
 }
 
 /**
+ * High-precision pop-in bounce curve matching CSS animate-pop-in-bounce keyframes.
+ * Evaluates smooth scaling from 0.45 -> 1.10 -> 0.97 -> 1.0 alongside opacity 0 -> 1.
+ */
+export function computePopInBounce(t: number): { scale: number; opacity: number } {
+  if (t <= 0) return { scale: 0.45, opacity: 0 };
+  if (t >= 1) return { scale: 1.0, opacity: 1 };
+  const opacity = Math.min(1.0, t / 0.25);
+  let scale: number;
+  if (t < 0.65) {
+    const sub = t / 0.65;
+    scale = 0.45 + (1.1 - 0.45) * Math.sin(sub * Math.PI * 0.5);
+  } else if (t < 0.85) {
+    const sub = (t - 0.65) / 0.20;
+    scale = 1.1 - (1.1 - 0.97) * (0.5 - 0.5 * Math.cos(sub * Math.PI));
+  } else {
+    const sub = (t - 0.85) / 0.15;
+    scale = 0.97 + (1.0 - 0.97) * (0.5 - 0.5 * Math.cos(sub * Math.PI));
+  }
+  return { scale, opacity };
+}
+
+/**
  * Checks whether the destination marker, label, and arrival banner should be revealed.
  * Stays hidden while the route animation and vehicle are traveling.
  * Reveals exactly when the route animation and vehicle reach the destination (progress >= pArrive).
@@ -342,9 +364,12 @@ function drawPinOnCanvas(
   title: string,
   type: 'start' | 'end',
   scale: number,
-  popScale: number = 1
+  popScale: number = 1,
+  opacity: number = 1,
+  pulseTimeSec: number = 0
 ) {
   ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
   if (popScale !== 1) {
     ctx.translate(x, y);
     ctx.scale(popScale, popScale);
@@ -360,10 +385,13 @@ function drawPinOnCanvas(
   ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
   ctx.fill();
 
-  // 2. Ground pulse halo
+  // 2. Ground pulse halo with dynamic expanding wave
+  const pulsePhase = pulseTimeSec > 0 ? (pulseTimeSec * 1.8) % 1 : 0;
+  const pulseRadius = (10 + pulsePhase * 8) * scale;
+  const pulseAlpha = pulseTimeSec > 0 ? Math.max(0, 0.5 * (1 - pulsePhase)) : 0.45;
   ctx.beginPath();
-  ctx.arc(x, y, 12 * scale, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(5, 150, 105, 0.45)';
+  ctx.arc(x, y, pulseRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(5, 150, 105, ${pulseAlpha})`;
   ctx.lineWidth = 2.5 * scale;
   ctx.stroke();
 
@@ -451,9 +479,11 @@ function drawTitleOverlayOnCanvas(
   ctx: CanvasRenderingContext2D,
   routeConfig: RouteConfig,
   scaleX: number,
-  scaleY: number
+  scaleY: number,
+  opacity: number = 1
 ) {
   ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
   const cardX = 20 * scaleX;
   const cardY = 20 * scaleY;
   const cardW = 340 * scaleX;
@@ -486,9 +516,11 @@ function drawRouteSummaryBadgeOnCanvas(
   totalDistanceKm: number,
   scale: number,
   popScale: number = 1,
+  opacity: number = 1,
   categoryImage?: HTMLImageElement | null
 ) {
   ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
   if (popScale !== 1) {
     ctx.translate(x, y);
     ctx.scale(popScale, popScale);
@@ -870,12 +902,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         );
       }
 
-      // 2. Draw Vehicle Model
-      const { pArrive } = getTimelinePhases(routeConfig.durationSeconds || 10);
+      // 2. Draw Vehicle Model with smooth arrival fade-out
+      const totalDuration = routeConfig.durationSeconds || 10;
+      const { pArrive, pOverview } = getTimelinePhases(totalDuration);
       const isArrived = progress >= pArrive;
       const travelFraction = isArrived ? 1.0 : progress / pArrive;
 
-      if (calculatedRoute && calculatedRoute.coordinates.length && progress > 0.001 && !isArrived) {
+      // Smooth vehicle arrival fade-out: ~0.4s window after arriving at destination
+      const fadeDurationSec = Math.min(0.45, Math.max(0.25, (pOverview - pArrive) * totalDuration * 0.7));
+      const fadeWindowProgress = fadeDurationSec / totalDuration;
+      const isVehicleFading = isArrived && progress < pArrive + fadeWindowProgress;
+      const isVehicleVisible = (progress >= 0 && !isArrived) || isVehicleFading;
+
+      if (calculatedRoute && calculatedRoute.coordinates.length && isVehicleVisible) {
         const routeLine = turf.lineString(calculatedRoute.coordinates);
         const totalDistanceKm = turf.length(routeLine, { units: 'kilometers' });
         const easedT = easeInOutQuad(travelFraction);
@@ -886,7 +925,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         }
 
         let frontCoord: [number, number];
-        if (currentDistKm <= 0.0001) {
+        if (isArrived) {
+          frontCoord = calculatedRoute.coordinates[calculatedRoute.coordinates.length - 1];
+        } else if (currentDistKm <= 0.0001) {
           frontCoord = calculatedRoute.coordinates[0];
         } else {
           const safeSliceDist = Math.min(totalDistanceKm, Math.max(0.001, currentDistKm));
@@ -902,28 +943,41 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           frontCoord,
           exportSmoothedBearingRef.current
         );
-        exportSmoothedBearingRef.current = smoothedBearing;
+        if (!isArrived) {
+          exportSmoothedBearingRef.current = smoothedBearing;
+        }
 
         const vp = map.project(frontCoord);
         const vx = vp.x * scaleX;
         const vy = vp.y * scaleY;
 
         const isFlight = routeConfig.vehicle === 'airplane' || (routeConfig.vehicle === 'custom' && routeConfig.modeCategory === 'flight');
-        const altitudeOffset = isFlight ? Math.sin(travelFraction * Math.PI) * 45 * scaleY : 0;
+        const altitudeOffset = isFlight && !isArrived ? Math.sin(travelFraction * Math.PI) * 45 * scaleY : 0;
+
+        // Compute smooth arrival fade-out opacity and scale
+        let vehicleOpacity = 1.0;
+        let vehicleScale = 1.0;
+        if (isVehicleFading) {
+          const tFade = Math.min(1.0, Math.max(0, (progress - pArrive) / fadeWindowProgress));
+          const fadeEased = easeInOutQuad(tFade);
+          vehicleOpacity = Math.max(0, 1.0 - fadeEased);
+          vehicleScale = Math.max(0.85, 1.0 - 0.14 * fadeEased);
+        }
 
         // Draw Vehicle Icon with Side-View Orientation (Auto-Flip & Upright Clamped Tilt)
-        if (vehicleImageRef.current && vehicleImageRef.current.complete) {
+        if (vehicleImageRef.current && vehicleImageRef.current.complete && vehicleOpacity > 0.005) {
           const { scaleX: vehFlipX, tiltDeg } = getSideViewOrientation(smoothedBearing);
           ctx.save();
+          ctx.globalAlpha = vehicleOpacity;
           ctx.translate(vx, vy - altitudeOffset);
-          ctx.scale(vehFlipX, 1);
+          ctx.scale(vehFlipX * vehicleScale, vehicleScale);
           ctx.rotate((tiltDeg * Math.PI) / 180);
           const vehicleSize = 58 * scaleX;
 
           if (routeConfig.vehicle === 'custom') {
             const radius = vehicleSize / 2;
             // Circle shadow
-            ctx.shadowColor = 'rgba(235, 94, 40, 0.45)';
+            ctx.shadowColor = `rgba(235, 94, 40, ${0.45 * vehicleOpacity})`;
             ctx.shadowBlur = 12 * scaleX;
             ctx.shadowOffsetY = 3 * scaleY;
 
@@ -948,7 +1002,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
             ctx.drawImage(vehicleImageRef.current, -innerSize / 2, -innerSize / 2, innerSize, innerSize);
             ctx.restore();
           } else {
-            ctx.shadowColor = 'rgba(0,0,0,0.45)';
+            ctx.shadowColor = `rgba(0, 0, 0, ${0.45 * vehicleOpacity})`;
             ctx.shadowBlur = 10 * scaleX;
             ctx.shadowOffsetY = 4 * scaleY;
             ctx.drawImage(vehicleImageRef.current, -vehicleSize / 2, -vehicleSize / 2, vehicleSize, vehicleSize);
@@ -958,38 +1012,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
       }
 
       // 3. Draw Station Pins if enabled (Drawn on top of vehicle for maximum legibility)
-      const isDestinationRevealedForExport = checkDestinationReached(
-        progress,
-        routeConfig.durationSeconds || 10,
-        calculatedRoute
-      );
-
       if (routeConfig.showStationPins) {
         if (routeConfig.startPoint) {
           const p = map.project([routeConfig.startPoint.lng, routeConfig.startPoint.lat]);
-          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.startPoint.name, 'start', scaleX);
+          const startAnimDuration = 0.4 / totalDuration;
+          const tStart = Math.min(1.0, progress / startAnimDuration);
+          const { scale: startScale, opacity: startOpacity } = computePopInBounce(tStart);
+          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.startPoint.name, 'start', scaleX, startScale, startOpacity);
         }
-        if (routeConfig.endPoint && isDestinationRevealedForExport) {
+        if (routeConfig.endPoint && progress >= pArrive) {
           const p = map.project([routeConfig.endPoint.lng, routeConfig.endPoint.lat]);
-          const { pArrive: pArr } = getTimelinePhases(routeConfig.durationSeconds || 10);
-          const travelFrac = progress >= pArr ? 1.0 : progress / pArr;
-          const revealT = Math.min(1.0, Math.max(0, (travelFrac - 0.98) / 0.02));
-          const popScale = Math.max(0.5, Math.min(1.15, easeOutBack(revealT)));
-          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale);
+          const arriveAnimDurationSec = 0.48;
+          const arriveAnimProgress = arriveAnimDurationSec / totalDuration;
+          const tArrive = Math.min(1.0, Math.max(0, (progress - pArrive) / arriveAnimProgress));
+          const { scale: popScale, opacity: pinOpacity } = computePopInBounce(tArrive);
+          const elapsedAfterArrivalSec = Math.max(0, (progress - pArrive) * totalDuration);
+          drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale, pinOpacity, elapsedAfterArrivalSec);
         }
       }
 
-      // 4. Draw Header Card if enabled
+      // 4. Draw Header Card if enabled with smooth fade-in
       if (routeConfig.showTitleOverlay) {
-        drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY);
+        const titleFadeWindow = 0.35 / totalDuration;
+        const titleOpacity = Math.min(1.0, progress / titleFadeWindow);
+        drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY, titleOpacity);
       }
 
       // 5. Draw Google Maps-Style Route Summary Badge at Route Midpoint after arrival during overview
-      const { pArrive: pArr, pOverview } = getTimelinePhases(routeConfig.durationSeconds || 10);
       if (progress >= pOverview && midpointCoord && calculatedRoute) {
         const mp = map.project(midpointCoord);
-        const revealT = Math.min(1.0, Math.max(0, (progress - pOverview) / 0.03));
-        const popScale = Math.max(0.5, Math.min(1.05, easeOutBack(revealT)));
+        const summaryAnimDurationSec = 0.48;
+        const summaryAnimProgress = summaryAnimDurationSec / totalDuration;
+        const tSummary = Math.min(1.0, Math.max(0, (progress - pOverview) / summaryAnimProgress));
+        const { scale: summaryScale, opacity: summaryOpacity } = computePopInBounce(tSummary);
         drawRouteSummaryBadgeOnCanvas(
           ctx,
           mp.x * scaleX,
@@ -997,7 +1052,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           routeConfig,
           calculatedRoute.totalDistanceKm,
           scaleX,
-          popScale,
+          summaryScale,
+          summaryOpacity,
           categoryImageRef.current
         );
       }
@@ -1010,7 +1066,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           ? '© Esri, Maxar'
           : '© Esri, © OpenStreetMap';
 
+      const attrFadeWindow = 0.35 / totalDuration;
+      const attrOpacity = Math.min(1.0, progress / attrFadeWindow);
+
       ctx.save();
+      ctx.globalAlpha = attrOpacity;
       ctx.font = `${Math.round(11 * scaleX)}px sans-serif`;
       const textWidth = ctx.measureText(attributionText).width;
       const padX = 8 * scaleX;
@@ -1769,9 +1829,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
               top: `${vehicleState.screenPos.y}px`,
             }}
           >
-            {/* Arrival fade-out container (transitions opacity, never position) */}
+            {/* Arrival fade-out container (transitions opacity and scale smoothly) */}
             <div
-              className={`transition-opacity duration-300 ease-out ${
+              className={`transition-all duration-300 ease-out ${
                 isArrivedState ? 'opacity-0 scale-90 pointer-events-none' : 'opacity-100 scale-100'
               }`}
             >
