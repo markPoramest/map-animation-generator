@@ -121,9 +121,3 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | `pnpm run build` | Builds optimized production package |
 | `pnpm run start` | Runs the production build locally |
 | `pnpm run lint` | Runs ESLint verification |
-
----
-
-## 📄 License
-
-MIT License © 2026 Mark no Nihon Tabi. All rights reserved.
