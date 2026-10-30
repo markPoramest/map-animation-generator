@@ -11,7 +11,7 @@ An interactive, high-performance web studio for generating cinematic 3D animated
 [![Video Export](https://img.shields.io/badge/Export-MP4_&_WebM-EB5E28?style=for-the-badge)](https://github.com/markPoramest/map-animation-generator)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-CSS_v4-38bdf8?style=for-the-badge&logo=tailwindcss)](https://tailwindcss.com/)
 
-🌐 **Live Demo**: **[https://map-animation-generator.vercel.app](https://map-animation-generator.vercel.app)**
+🌐 **Live Demo**: **[https://mapgen.marknonihontabi.com](https://mapgen.marknonihontabi.com)**
 
 </div>
 

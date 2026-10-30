@@ -13,8 +13,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://mapgen.marknonihontabi.com"),
   title: "Map Animation Generator - Map Route Animation Video",
   description: "Create animated 3D map route travel videos from start and destination points with customizable vehicles, train models, and travel time badges.",
+  openGraph: {
+    title: "Map Animation Generator - Map Route Animation Video",
+    description: "Create animated 3D map route travel videos from start and destination points with customizable vehicles, train models, and travel time badges.",
+    url: "https://mapgen.marknonihontabi.com",
+    siteName: "Map Animation Generator",
+    type: "website",
+  },
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },
