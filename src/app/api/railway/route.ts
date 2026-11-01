@@ -4,6 +4,8 @@ import { matchMajorRailwayCorridor, fetchOverpassRailwayRoute, generateRailwayFa
 import { getStoredRoute, storeRoute } from '@/services/railwayCache';
 import * as turf from '@turf/turf';
 
+export const maxDuration = 30; // 30s timeout budget for serverless execution
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
