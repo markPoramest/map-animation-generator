@@ -18,10 +18,11 @@ import {
   Upload,
   X,
   Route,
-  Navigation
+  Navigation,
+  Loader2
 } from 'lucide-react';
 import { RouteConfig, VehicleType, GeoPoint, ModeCategory, getEffectiveModeCategory } from '@/types/route';
-import { searchLocations } from '@/services/geocoding';
+import { searchLocations, getLocalMatches } from '@/services/geocoding';
 import { CategoryGlyph, CATEGORY_LABELS } from './CategoryGlyphs';
 
 interface RouteEditorProps {
@@ -56,6 +57,15 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
   const [endSuggestions, setEndSuggestions] = useState<GeoPoint[]>([]);
   const [showStartDropdown, setShowStartDropdown] = useState(false);
   const [showEndDropdown, setShowEndDropdown] = useState(false);
+  const [isStartSearching, setIsStartSearching] = useState(false);
+  const [isEndSearching, setIsEndSearching] = useState(false);
+
+  const startTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const endTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const startAbortRef = useRef<AbortController | null>(null);
+  const endAbortRef = useRef<AbortController | null>(null);
+  const startContainerRef = useRef<HTMLDivElement>(null);
+  const endContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFile = (file: File) => {
@@ -93,37 +103,135 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
     setEndQuery(routeConfig.endPoint.name);
   }, [routeConfig.endPoint.name]);
 
-  const handleStartSearch = async (val: string) => {
+  // Click outside listener to dismiss suggestion dropdowns
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (startContainerRef.current && !startContainerRef.current.contains(e.target as Node)) {
+        setShowStartDropdown(false);
+      }
+      if (endContainerRef.current && !endContainerRef.current.contains(e.target as Node)) {
+        setShowEndDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      if (startTimerRef.current) clearTimeout(startTimerRef.current);
+      if (endTimerRef.current) clearTimeout(endTimerRef.current);
+      if (startAbortRef.current) startAbortRef.current.abort();
+      if (endAbortRef.current) endAbortRef.current.abort();
+    };
+  }, []);
+
+  // Debounced start search with instant local station matches & request cancellation
+  const handleStartSearch = (val: string) => {
     setStartQuery(val);
-    if (val.trim().length >= 2) {
-      const results = await searchLocations(val);
-      setStartSuggestions(results);
-      setShowStartDropdown(true);
-    } else {
+    const trimmed = val.trim();
+
+    // Clear any pending debounce timer
+    if (startTimerRef.current) {
+      clearTimeout(startTimerRef.current);
+      startTimerRef.current = null;
+    }
+    // Abort previous in-flight fetch request
+    if (startAbortRef.current) {
+      startAbortRef.current.abort();
+      startAbortRef.current = null;
+    }
+
+    if (trimmed.length < 2) {
       setStartSuggestions([]);
       setShowStartDropdown(false);
+      setIsStartSearching(false);
+      return;
     }
+
+    // 1. Show instant local matches immediately (0ms, 0 API calls)
+    const local = getLocalMatches(trimmed);
+    if (local.length > 0) {
+      setStartSuggestions(local);
+      setShowStartDropdown(true);
+    }
+
+    // 2. Debounce remote search (350ms delay) to prevent hammering geocoding APIs on every character
+    setIsStartSearching(true);
+    startTimerRef.current = setTimeout(async () => {
+      const controller = new AbortController();
+      startAbortRef.current = controller;
+      try {
+        const results = await searchLocations(trimmed, controller.signal);
+        setStartSuggestions(results);
+        setShowStartDropdown(results.length > 0);
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          console.warn('[RouteEditor] Start search error:', err);
+        }
+      } finally {
+        setIsStartSearching(false);
+      }
+    }, 350);
   };
 
-  const handleEndSearch = async (val: string) => {
+  // Debounced destination search with instant local station matches & request cancellation
+  const handleEndSearch = (val: string) => {
     setEndQuery(val);
-    if (val.trim().length >= 2) {
-      const results = await searchLocations(val);
-      setEndSuggestions(results);
-      setShowEndDropdown(true);
-    } else {
+    const trimmed = val.trim();
+
+    if (endTimerRef.current) {
+      clearTimeout(endTimerRef.current);
+      endTimerRef.current = null;
+    }
+    if (endAbortRef.current) {
+      endAbortRef.current.abort();
+      endAbortRef.current = null;
+    }
+
+    if (trimmed.length < 2) {
       setEndSuggestions([]);
       setShowEndDropdown(false);
+      setIsEndSearching(false);
+      return;
     }
+
+    // 1. Show instant local matches immediately
+    const local = getLocalMatches(trimmed);
+    if (local.length > 0) {
+      setEndSuggestions(local);
+      setShowEndDropdown(true);
+    }
+
+    // 2. Debounce remote search (350ms delay)
+    setIsEndSearching(true);
+    endTimerRef.current = setTimeout(async () => {
+      const controller = new AbortController();
+      endAbortRef.current = controller;
+      try {
+        const results = await searchLocations(trimmed, controller.signal);
+        setEndSuggestions(results);
+        setShowEndDropdown(results.length > 0);
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          console.warn('[RouteEditor] End search error:', err);
+        }
+      } finally {
+        setIsEndSearching(false);
+      }
+    }, 350);
   };
 
   const handleSelectStart = (point: GeoPoint) => {
+    if (startTimerRef.current) clearTimeout(startTimerRef.current);
+    if (startAbortRef.current) startAbortRef.current.abort();
+    setIsStartSearching(false);
     setStartQuery(point.name);
     onChange({ startPoint: point });
     setShowStartDropdown(false);
   };
 
   const handleSelectEnd = (point: GeoPoint) => {
+    if (endTimerRef.current) clearTimeout(endTimerRef.current);
+    if (endAbortRef.current) endAbortRef.current.abort();
+    setIsEndSearching(false);
     setEndQuery(point.name);
     onChange({ endPoint: point });
     setShowEndDropdown(false);
@@ -207,34 +315,58 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
       {/* Start & End Points Inputs */}
       <div className="flex flex-col gap-3">
         {/* Start Station */}
-        <div className="relative">
-          <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-            <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Departure Point (Start)</span>
+        <div className="relative" ref={startContainerRef}>
+          <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center justify-between gap-1.5 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Departure Point (Start)</span>
+            </span>
+            {isStartSearching && (
+              <span className="text-[10px] font-normal text-[#EB5E28] flex items-center gap-1">
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                <span>Searching...</span>
+              </span>
+            )}
           </label>
           <div className="relative">
             <input
               type="text"
               value={startQuery}
               onChange={(e) => handleStartSearch(e.target.value)}
-              onFocus={() => setShowStartDropdown(startSuggestions.length > 0)}
+              onFocus={() => {
+                if (startQuery.trim().length >= 2) {
+                  if (startSuggestions.length === 0) {
+                    setStartSuggestions(getLocalMatches(startQuery));
+                  }
+                  setShowStartDropdown(true);
+                }
+              }}
               placeholder="e.g. Matsumoto Station, Tokyo, London..."
-              className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3.5 py-2.5 text-xs text-[#252422] placeholder-[#9e978d] focus:border-[#EB5E28]/60 focus:bg-white transition-all outline-none"
+              className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3.5 py-2.5 pr-9 text-xs text-[#252422] placeholder-[#9e978d] focus:border-[#EB5E28]/60 focus:bg-white transition-all outline-none"
             />
-            <Search className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#9e978d]" />
+            {isStartSearching ? (
+              <Loader2 className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#EB5E28] animate-spin pointer-events-none" />
+            ) : (
+              <Search className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#9e978d] pointer-events-none" />
+            )}
           </div>
-          {showStartDropdown && startSuggestions.length > 0 && (
-            <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-[#dcd4c6] rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
+          {showStartDropdown && (
+            <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-[#dcd4c6] rounded-xl shadow-2xl overflow-hidden max-h-52 overflow-y-auto">
               {startSuggestions.map((item, idx) => (
                 <button
                   key={idx}
                   onClick={() => handleSelectStart(item)}
-                  className="w-full px-3 py-2 text-left text-xs text-[#403D39] hover:bg-[#ede5d6] border-b border-[#e8e1d5] last:border-none flex flex-col"
+                  className="w-full px-3.5 py-2.5 text-left text-xs text-[#403D39] hover:bg-[#ede5d6] border-b border-[#e8e1d5] last:border-none flex flex-col transition-colors group"
                 >
-                  <span className="font-semibold text-[#252422]">{item.name}</span>
+                  <span className="font-semibold text-[#252422] group-hover:text-[#EB5E28] transition-colors">{item.name}</span>
                   {item.subText && <span className="text-[10px] text-[#736d65] truncate">{item.subText}</span>}
                 </button>
               ))}
+              {startSuggestions.length === 0 && !isStartSearching && startQuery.trim().length >= 2 && (
+                <div className="px-3.5 py-3 text-xs text-[#736d65] text-center">
+                  No matching locations found
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -251,34 +383,58 @@ export const RouteEditor: React.FC<RouteEditorProps> = ({
         </div>
 
         {/* Destination Station */}
-        <div className="relative">
-          <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center gap-1.5 mb-1.5">
-            <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Destination Point (End)</span>
+        <div className="relative" ref={endContainerRef}>
+          <label className="text-xs font-bold text-[#736d65] uppercase tracking-wider flex items-center justify-between gap-1.5 mb-1.5">
+            <span className="flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Destination Point (End)</span>
+            </span>
+            {isEndSearching && (
+              <span className="text-[10px] font-normal text-[#EB5E28] flex items-center gap-1">
+                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                <span>Searching...</span>
+              </span>
+            )}
           </label>
           <div className="relative">
             <input
               type="text"
               value={endQuery}
               onChange={(e) => handleEndSearch(e.target.value)}
-              onFocus={() => setShowEndDropdown(endSuggestions.length > 0)}
+              onFocus={() => {
+                if (endQuery.trim().length >= 2) {
+                  if (endSuggestions.length === 0) {
+                    setEndSuggestions(getLocalMatches(endQuery));
+                  }
+                  setShowEndDropdown(true);
+                }
+              }}
               placeholder="e.g. Kami-Suwa Station, Kyoto, Paris..."
-              className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3.5 py-2.5 text-xs text-[#252422] placeholder-[#9e978d] focus:border-[#EB5E28]/60 focus:bg-white transition-all outline-none"
+              className="w-full bg-[#f5efe4] border border-[#dcd4c6] rounded-xl px-3.5 py-2.5 pr-9 text-xs text-[#252422] placeholder-[#9e978d] focus:border-[#EB5E28]/60 focus:bg-white transition-all outline-none"
             />
-            <Search className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#9e978d]" />
+            {isEndSearching ? (
+              <Loader2 className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#EB5E28] animate-spin pointer-events-none" />
+            ) : (
+              <Search className="w-3.5 h-3.5 absolute right-3.5 top-3 text-[#9e978d] pointer-events-none" />
+            )}
           </div>
-          {showEndDropdown && endSuggestions.length > 0 && (
-            <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-[#dcd4c6] rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
+          {showEndDropdown && (
+            <div className="absolute left-0 right-0 top-full mt-1 z-40 bg-white border border-[#dcd4c6] rounded-xl shadow-2xl overflow-hidden max-h-52 overflow-y-auto">
               {endSuggestions.map((item, idx) => (
                 <button
                   key={idx}
                   onClick={() => handleSelectEnd(item)}
-                  className="w-full px-3 py-2 text-left text-xs text-[#403D39] hover:bg-[#ede5d6] border-b border-[#e8e1d5] last:border-none flex flex-col"
+                  className="w-full px-3.5 py-2.5 text-left text-xs text-[#403D39] hover:bg-[#ede5d6] border-b border-[#e8e1d5] last:border-none flex flex-col transition-colors group"
                 >
-                  <span className="font-semibold text-[#252422]">{item.name}</span>
+                  <span className="font-semibold text-[#252422] group-hover:text-[#EB5E28] transition-colors">{item.name}</span>
                   {item.subText && <span className="text-[10px] text-[#736d65] truncate">{item.subText}</span>}
                 </button>
               ))}
+              {endSuggestions.length === 0 && !isEndSearching && endQuery.trim().length >= 2 && (
+                <div className="px-3.5 py-3 text-xs text-[#736d65] text-center">
+                  No matching locations found
+                </div>
+              )}
             </div>
           )}
         </div>
