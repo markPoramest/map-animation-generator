@@ -484,10 +484,15 @@ function drawTitleOverlayOnCanvas(
 ) {
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
-  const cardX = 20 * scaleX;
-  const cardY = 20 * scaleY;
-  const cardW = 340 * scaleX;
+
+  const titleText = `${routeConfig.startPoint.name}  ➔  ${routeConfig.endPoint.name}`;
+  ctx.font = `bold ${Math.round(13 * scaleX)}px sans-serif`;
+  const titleTextWidth = ctx.measureText(titleText).width;
+
+  const cardW = Math.max(240 * scaleX, titleTextWidth + 32 * scaleX);
   const cardH = 54 * scaleY;
+  const cardX = 20 * scaleX;
+  const cardY = ctx.canvas.height - cardH - 20 * scaleY;
 
   ctx.fillStyle = 'rgba(255, 252, 242, 0.92)';
   ctx.strokeStyle = 'rgba(220, 212, 198, 0.8)';
@@ -503,7 +508,7 @@ function drawTitleOverlayOnCanvas(
 
   ctx.font = `bold ${Math.round(13 * scaleX)}px sans-serif`;
   ctx.fillStyle = '#252422';
-  ctx.fillText(`${routeConfig.startPoint.name}  ➔  ${routeConfig.endPoint.name}`, cardX + 16 * scaleX, cardY + 40 * scaleY);
+  ctx.fillText(titleText, cardX + 16 * scaleX, cardY + 40 * scaleY);
 
   ctx.restore();
 }
@@ -1011,7 +1016,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
         }
       }
 
-      // 3. Draw Station Pins if enabled (Drawn on top of vehicle for maximum legibility)
+      // 3. Draw Route Journey Card at bottom-left if enabled with smooth fade-in
+      if (routeConfig.showTitleOverlay) {
+        const titleFadeWindow = 0.35 / totalDuration;
+        const titleOpacity = Math.min(1.0, progress / titleFadeWindow);
+        drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY, titleOpacity);
+      }
+
+      // 4. Draw Station Pins if enabled (Drawn on top of vehicle and overlays for maximum legibility)
       if (routeConfig.showStationPins) {
         if (routeConfig.startPoint) {
           const p = map.project([routeConfig.startPoint.lng, routeConfig.startPoint.lat]);
@@ -1029,13 +1041,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           const elapsedAfterArrivalSec = Math.max(0, (progress - pArrive) * totalDuration);
           drawPinOnCanvas(ctx, p.x * scaleX, p.y * scaleY, routeConfig.endPoint.name, 'end', scaleX, popScale, pinOpacity, elapsedAfterArrivalSec);
         }
-      }
-
-      // 4. Draw Header Card if enabled with smooth fade-in
-      if (routeConfig.showTitleOverlay) {
-        const titleFadeWindow = 0.35 / totalDuration;
-        const titleOpacity = Math.min(1.0, progress / titleFadeWindow);
-        drawTitleOverlayOnCanvas(ctx, routeConfig, scaleX, scaleY, titleOpacity);
       }
 
       // 5. Draw Google Maps-Style Route Summary Badge at Route Midpoint after arrival during overview
@@ -1896,25 +1901,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, MapCanvasProps>(function Ma
           </div>
         )}
 
-        {/* Title & Route Info Overlay at top */}
+        {/* Route Journey Overlay at bottom-left & Travel Mode Badge at top-right */}
         {routeConfig.showTitleOverlay && (
-          <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none">
-            <div className="bg-white/90 backdrop-blur-md border border-[#dcd4c6] px-4 py-2.5 rounded-xl shadow-2xl">
-              <div className="text-[10px] font-medium text-[#736d65] uppercase tracking-wider">Route Journey</div>
-              <div className="text-xs font-bold text-[#252422] flex items-center gap-2">
-                <span>{routeConfig.startPoint.name}</span>
-                <span className="text-[#EB5E28]">➔</span>
-                <span>{routeConfig.endPoint.name}</span>
+          <>
+            <div className="absolute bottom-4 left-4 z-10 pointer-events-none">
+              <div className="bg-white/90 backdrop-blur-md border border-[#dcd4c6] px-4 py-2.5 rounded-xl shadow-2xl">
+                <div className="text-[10px] font-medium text-[#736d65] uppercase tracking-wider">Route Journey</div>
+                <div className="text-xs font-bold text-[#252422] flex items-center gap-2">
+                  <span>{routeConfig.startPoint.name}</span>
+                  <span className="text-[#EB5E28]">➔</span>
+                  <span>{routeConfig.endPoint.name}</span>
+                </div>
               </div>
             </div>
 
             {/* Travel Mode Badge */}
-            <div className="bg-[#EB5E28]/10 backdrop-blur-md border border-[#EB5E28]/30 px-3 py-1.5 rounded-lg text-[#EB5E28] text-xs font-semibold uppercase tracking-wider">
-              {routeConfig.vehicle === 'custom'
-                ? CATEGORY_LABELS[getEffectiveModeCategory(routeConfig)]
-                : routeConfig.vehicle} • {routeConfig.travelTimeText}
+            <div className="absolute top-4 right-4 z-10 pointer-events-none">
+              <div className="bg-[#EB5E28]/10 backdrop-blur-md border border-[#EB5E28]/30 px-3 py-1.5 rounded-lg text-[#EB5E28] text-xs font-semibold uppercase tracking-wider">
+                {routeConfig.vehicle === 'custom'
+                  ? CATEGORY_LABELS[getEffectiveModeCategory(routeConfig)]
+                  : routeConfig.vehicle} • {routeConfig.travelTimeText}
+              </div>
             </div>
-          </div>
+          </>
         )}
 
         {/* Subtle Map Attribution Badge in bottom-right corner */}
